@@ -165,7 +165,7 @@ class TestPageServing:
         body = env.client.get("/").text.lower()
         # Core panels named in the spec should be present in the markup.
         assert "suggestion" in body
-        assert "prompt" in body
+        assert "chat" in body                 # the AI prompt is now a chat panel
         # Connection indicators for X32 + audio input.
         assert "x32" in body
 
@@ -737,3 +737,68 @@ class TestRecordingConfig:
     def test_build_default_app_has_no_recording_source_by_default(self):
         app = build_default_app(ServerConfig())
         assert app.state.orchestrator._recording_source is None
+
+
+# ===========================================================================
+# SECTION 16 — AI chat (real LLM conversation)
+# ===========================================================================
+
+class FakeChatClient:
+    """Duck-typed LLM client: echoes a canned reply and records the prompt."""
+
+    def __init__(self, response="Try easing the band down a touch."):
+        self.response = response
+        self.last_prompt = None
+
+    def generate(self, prompt):
+        self.last_prompt = prompt
+        return self.response
+
+
+class TestChatEndpoint:
+
+    def test_chat_replies_via_the_llm_when_available(self):
+        env = make_env(clean_metrics())
+        client = FakeChatClient(response="Bring the vocal up about 2 dB.")
+        env.interaction_agent._suggestions._client = client
+        data = env.client.post("/api/chat",
+                               json={"message": "How do I help the vocal?"}).json()
+        assert data["reply"] == "Bring the vocal up about 2 dB."
+        assert data["source"] == "llm"
+        assert "How do I help the vocal?" in client.last_prompt
+
+    def test_chat_falls_back_without_a_model(self):
+        env = make_env(clean_metrics())     # generator has no client
+        data = env.client.post("/api/chat",
+                               json={"message": "Anything I should fix?"}).json()
+        assert data["reply"]
+        assert data["source"] == "fallback"
+
+    def test_chat_sends_history(self):
+        env = make_env(clean_metrics())
+        client = FakeChatClient()
+        env.interaction_agent._suggestions._client = client
+        env.client.post("/api/chat", json={
+            "message": "And after that?",
+            "history": [{"role": "user", "content": "Is it too bright?"},
+                        {"role": "assistant", "content": "A little."}],
+        })
+        assert "Is it too bright?" in client.last_prompt
+        assert "And after that?" in client.last_prompt
+
+    def test_chat_is_failsafe(self):
+        env = make_env(clean_metrics())
+
+        class BoomAgent:
+            def chat(self, *a, **k):
+                raise RuntimeError("boom")
+
+        env.app.state.interaction_agent = BoomAgent()
+        resp = env.client.post("/api/chat", json={"message": "hi"})
+        assert resp.status_code == 200
+        assert resp.json()["reply"]
+
+    def test_page_has_chat_ui(self):
+        env = make_env()
+        body = env.client.get("/").text.lower()
+        assert "chat" in body

@@ -37,11 +37,11 @@ import asyncio
 import os
 import time
 from pathlib import Path
-from typing import Callable, Dict, Mapping, Optional, Tuple, Union
+from typing import Callable, Dict, List, Mapping, Optional, Tuple, Union
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.detection import Issue, IssueType, Priority, confidence_level
 from src.event_log import SessionLogger
@@ -188,6 +188,20 @@ class FocusRequest(BaseModel):
     enabled: bool
 
 
+class ChatTurn(BaseModel):
+    """One prior turn of the AI chat conversation."""
+
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    """A chat message plus the conversation so far (for multi-turn context)."""
+
+    message: str
+    history: List[ChatTurn] = Field(default_factory=list)
+
+
 def _issue_from(req: "IssueActionRequest") -> Issue:
     """Rebuild a minimal Issue for an Agent 7 action.
 
@@ -273,6 +287,23 @@ def _apply_focus(payload: dict) -> None:
     """
     payload["issues"] = (payload.get("issues") or [])[:1]
     payload["suggestions"] = (payload.get("suggestions") or [])[:1]
+
+
+def _mix_summary(app: FastAPI) -> str:
+    """A short natural-language summary of the current mix, to ground the chat."""
+    try:
+        frame = app.state.orchestrator.last_frame
+        if frame is None:
+            return ""
+        if getattr(frame, "all_clear", False):
+            return "the mix currently sounds good"
+        parts = []
+        for issue in getattr(frame, "issues", [])[:4]:
+            where = f" on {issue.channel}" if issue.channel else " on the main mix"
+            parts.append(f"{issue.issue.value}{where}")
+        return "active issues: " + ", ".join(parts) if parts else ""
+    except Exception:  # noqa: BLE001 — failsafe
+        return ""
 
 
 def _tick_payload(app: FastAPI) -> dict:
@@ -371,6 +402,25 @@ def create_app(
         except Exception:  # noqa: BLE001 — failsafe
             return JSONResponse({"ok": False}, status_code=200)
         return JSONResponse({"ok": True, "loudness_mode": req.loudness_mode.value})
+
+    @app.post("/api/chat")
+    def chat(req: ChatRequest) -> JSONResponse:
+        try:
+            history = [{"role": t.role, "content": t.content} for t in req.history]
+            reply, source = app.state.interaction_agent.chat(
+                req.message, history=history, mix_summary=_mix_summary(app)
+            )
+            _log_action("chat", detail=req.message)
+            return JSONResponse({
+                "reply": reply,
+                "source": getattr(source, "value", str(source)),
+            })
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse(
+                {"reply": "Sorry, I couldn't process that right now.",
+                 "source": "fallback"},
+                status_code=200,
+            )
 
     @app.post("/api/focus")
     def set_focus(req: FocusRequest) -> JSONResponse:

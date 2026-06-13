@@ -99,26 +99,53 @@
   }
   .seg button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-  /* ---- Detail panel (More / Tell me how) ---- */
-  #detail-panel {
-    margin-top: 14px; padding: 14px 16px; border-radius: 8px;
-    background: #11203a; border: 1px solid #2b4a7a;
-    color: #e8f0ff; font-size: 17px;
-    line-height: 1.5; white-space: pre-wrap;
+  /* ---- Tabs (Suggestions / Broadcast) ---- */
+  .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+  .tab {
+    background: #1b2130; color: var(--muted);
+    border: 1px solid var(--panel-edge); border-radius: 8px;
+    padding: 8px 16px; cursor: pointer; font-size: 16px;
   }
+  .tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tab .count { font-size: 13px; opacity: 0.85; }
 
-  /* ---- Prompt panel ---- */
-  #prompt-panel form { display: flex; gap: 10px; }
-  #prompt-input {
+  /* ---- Channel + meta chips ---- */
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .chip {
+    font-size: 13px; padding: 3px 10px; border-radius: 999px;
+    background: #20303f; color: var(--muted); border: 1px solid var(--panel-edge);
+    text-transform: none;
+  }
+  .chip.channel { background: #1d2c44; color: #bcd3ff; border-color: #2b4a7a; }
+
+  /* ---- Per-card detail (More / Tell me how, embedded in the card) ---- */
+  .card-detail {
+    margin-top: 10px; padding: 12px 14px; border-radius: 8px;
+    background: #11203a; border: 1px solid #2b4a7a;
+    color: #e8f0ff; font-size: 16px; line-height: 1.5; white-space: pre-wrap;
+  }
+  .actions button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  /* ---- Chat panel ---- */
+  #chat-log { max-height: 320px; overflow-y: auto; margin-bottom: 12px; display: flex; flex-direction: column; }
+  .chat-msg {
+    padding: 10px 14px; border-radius: 10px; margin-bottom: 8px;
+    font-size: 16px; max-width: 90%; white-space: pre-wrap;
+  }
+  .chat-msg.user { background: var(--accent); color: #fff; align-self: flex-end; }
+  .chat-msg.bot { background: #1b2130; border: 1px solid var(--panel-edge); align-self: flex-start; }
+  .chat-msg.bot.fallback { border-color: #5a4a1f; }
+  .chat-empty { color: var(--muted); font-size: 15px; }
+  #chat-panel form { display: flex; gap: 10px; }
+  #chat-input {
     flex: 1; background: #1b2130; color: var(--text);
     border: 1px solid var(--panel-edge); border-radius: 8px;
     padding: 12px; font-size: 16px;
   }
-  #prompt-panel button {
+  #chat-panel button {
     background: var(--accent); color: #fff; border: none; border-radius: 8px;
     padding: 12px 18px; cursor: pointer; font-size: 16px;
   }
-  #prompt-ack { color: var(--green); margin-top: 10px; min-height: 22px; font-size: 15px; }
   .metrics { font-size: 14px; color: var(--muted); margin-top: 6px; }
   #warnings { color: var(--yellow); font-size: 15px; margin-top: 12px; }
 </style>
@@ -135,13 +162,22 @@
   </header>
 
   <main>
-    <!-- ===== Suggestions Panel ===== -->
+    <!-- ===== Suggestions / Broadcast Panel (tab-split) ===== -->
     <section class="panel" id="suggestions-panel">
-      <h2>Suggestions</h2>
-      <div id="suggestions-list">
+      <div class="tabs" id="main-tabs">
+        <button class="tab active" data-tab="suggestions">
+          Suggestions <span class="count" id="tab-sugg-count"></span>
+        </button>
+        <button class="tab" data-tab="broadcast">
+          Broadcast <span class="count" id="tab-bcast-count"></span>
+        </button>
+      </div>
+      <div id="suggestions-list" class="tab-content">
         <div class="all-clear">✅ Your mix is sounding good</div>
       </div>
-      <div id="detail-panel" style="display:none;"></div>
+      <div id="broadcast-list" class="tab-content" style="display:none;">
+        <div class="metrics">Not monitoring a recording feed.</div>
+      </div>
       <div id="warnings"></div>
     </section>
 
@@ -186,19 +222,16 @@
         <div id="profile-summary" class="metrics" style="margin-top:10px;"></div>
       </section>
 
-      <section class="panel" id="prompt-panel">
-        <h2>AI Prompt</h2>
-        <form id="prompt-form">
-          <input id="prompt-input" type="text" autocomplete="off"
-                 placeholder='e.g. "The piano is always loud"' />
+      <section class="panel" id="chat-panel">
+        <h2>AI Chat</h2>
+        <div id="chat-log">
+          <div class="chat-empty">Ask the AI coach about your mix…</div>
+        </div>
+        <form id="chat-form">
+          <input id="chat-input" type="text" autocomplete="off"
+                 placeholder='e.g. "Why does the vocal sound buried?"' />
           <button type="submit">Send</button>
         </form>
-        <div id="prompt-ack"></div>
-      </section>
-
-      <section class="panel" id="recording-panel" style="margin-top:20px;">
-        <h2>Broadcast / Recording</h2>
-        <div id="recording-body" class="metrics">Not monitoring a recording feed.</div>
       </section>
     </div>
   </main>
@@ -219,34 +252,73 @@
     el.className = "dot " + (ok ? "ok" : "bad");
   }
 
+  function escapeHtml(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;",
+               '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  // Shared client state.
+  var lastState = null;                 // most recent server frame (for re-render)
+  var detailState = {};                 // suggestion key -> { mode, text } (open card detail)
+  var activeTab = "suggestions";        // which panel tab is showing
+  var chatHistory = [];                 // [{ role, content, fallback? }]
+
+  function suggKey(s) { return s.issue + "|" + (s.channel || ""); }
+
   function renderSuggestions(state) {
     var list = document.getElementById("suggestions-list");
     var suggestions = state.suggestions || [];
+    var count = document.getElementById("tab-sugg-count");
+    if (count) count.textContent = suggestions.length ? "(" + suggestions.length + ")" : "";
+
     if (!suggestions.length) {
       var msg = state.all_clear ? "✅ Your mix is sounding good" : "Monitoring…";
       list.innerHTML = '<div class="all-clear">' + msg + "</div>";
       return;
     }
+
+    // Forget open detail for issues that have cleared.
+    var present = {};
+    suggestions.forEach(function (s) { present[suggKey(s)] = true; });
+    Object.keys(detailState).forEach(function (k) {
+      if (!present[k]) delete detailState[k];
+    });
+
     list.innerHTML = suggestions.map(function (s) {
       var icon = s.priority_icon || "🔵";
       var label = s.confidence_label
         ? s.confidence_label.charAt(0).toUpperCase() + s.confidence_label.slice(1)
         : confLabel(s.confidence);
-      var where = s.channel ? " — " + s.channel : "";
-      var channelAttr = s.channel === null || s.channel === undefined ? "" : s.channel;
+      var key = suggKey(s);
+      var channelAttr = (s.channel === null || s.channel === undefined) ? "" : s.channel;
+      // Channel chip: the labelled channel where it applies, else the main mix.
+      var channelLabel = channelAttr ? channelAttr : "Main mix";
+      var open = detailState[key];
+      var detailHtml = open
+        ? '<div class="card-detail">' + escapeHtml(open.text) + "</div>"
+        : "";
+      var moreActive = open && open.mode === "more" ? " active" : "";
+      var howActive = open && open.mode === "tellmehow" ? " active" : "";
+      var chAttr = escapeHtml(channelAttr);
       return (
         '<div class="suggestion prio-' + s.priority + '">' +
           '<div class="top">' +
-            '<span class="badge">' + s.priority + where + "</span>" +
+            '<span class="chips">' +
+              '<span class="badge">' + s.priority + "</span>" +
+              '<span class="chip channel">' + escapeHtml(channelLabel) + "</span>" +
+            "</span>" +
             '<span class="badge">Confidence: ' + label + "</span>" +
           "</div>" +
-          '<div class="msg">' + icon + " " + (s.message || s.issue) + "</div>" +
+          '<div class="msg">' + icon + " " + escapeHtml(s.message || s.issue) + "</div>" +
           '<div class="actions">' +
-            '<button data-act="more" data-issue="' + s.issue + '" data-channel="' + channelAttr + '">More</button>' +
-            '<button data-act="tellmehow" data-issue="' + s.issue + '" data-channel="' + channelAttr + '">Tell me how</button>' +
-            '<button data-act="mark-normal" data-issue="' + s.issue + '" data-channel="' + channelAttr + '">Mark normal</button>' +
-            '<button data-ignore="' + s.issue + '" data-channel="' + channelAttr + '">Ignore (3 min)</button>' +
+            '<button class="act' + moreActive + '" data-act="more" data-issue="' + s.issue + '" data-channel="' + chAttr + '">More</button>' +
+            '<button class="act' + howActive + '" data-act="tellmehow" data-issue="' + s.issue + '" data-channel="' + chAttr + '">Tell me how</button>' +
+            '<button data-act="mark-normal" data-issue="' + s.issue + '" data-channel="' + chAttr + '">Mark normal</button>' +
+            '<button data-ignore="' + s.issue + '" data-channel="' + chAttr + '">Ignore (3 min)</button>' +
           "</div>" +
+          detailHtml +
         "</div>"
       );
     }).join("");
@@ -267,25 +339,32 @@
       btn.addEventListener("click", function () {
         var ch = btn.getAttribute("data-channel");
         var act = btn.getAttribute("data-act");
-        var url = act === "more" ? "/api/more"
-                : act === "tellmehow" ? "/api/tellmehow"
-                : "/api/mark-normal";
-        post(url, {
-          issue: btn.getAttribute("data-issue"),
-          channel: ch === "" ? null : ch
-        }).then(function (r) { return r.json(); })
-          .then(function (res) { showDetail(res); })
-          .catch(function () { showDetail({ message: "Could not complete that action." }); });
+        var issue = btn.getAttribute("data-issue");
+        var key = issue + "|" + ch;
+        var body = { issue: issue, channel: ch === "" ? null : ch };
+
+        if (act === "mark-normal") {
+          post("/api/mark-normal", body);
+          return;
+        }
+        // More / Tell me how toggle an embedded detail inside this card.
+        if (detailState[key] && detailState[key].mode === act) {
+          delete detailState[key];                 // second click closes it
+          renderSuggestions(lastState || state);
+          return;
+        }
+        var url = act === "more" ? "/api/more" : "/api/tellmehow";
+        post(url, body).then(function (r) { return r.json(); })
+          .then(function (res) {
+            detailState[key] = { mode: act, text: res.detail || res.message || "" };
+            renderSuggestions(lastState || state);
+          })
+          .catch(function () {
+            detailState[key] = { mode: act, text: "Could not load that." };
+            renderSuggestions(lastState || state);
+          });
       });
     });
-  }
-
-  // Persistent detail box (lives outside the auto-refreshing suggestions list).
-  function showDetail(res) {
-    var box = document.getElementById("detail-panel");
-    var text = res.detail || res.message || "";
-    box.textContent = text;
-    box.style.display = text ? "block" : "none";
   }
 
   function renderControls(state) {
@@ -316,40 +395,51 @@
     warn.textContent = (state.warnings || []).join("  ·  ");
   }
 
-  function renderRecording(state) {
-    var body = document.getElementById("recording-body");
+  function renderBroadcast(state) {
+    var body = document.getElementById("broadcast-list");
     if (!body) return;
+    var count = document.getElementById("tab-bcast-count");
     var rec = state.recording;
     if (!rec) {
-      body.textContent = "Not monitoring a recording feed.";
+      body.innerHTML = '<div class="metrics">Not monitoring a recording feed.</div>';
+      if (count) count.textContent = "";
       return;
     }
     if (!rec.available) {
-      body.textContent = "⚠️ Recording/stream feed unavailable.";
+      body.innerHTML = '<div class="metrics">⚠️ Recording/stream feed unavailable.</div>';
+      if (count) count.textContent = "";
       return;
     }
     var findings = rec.findings || [];
+    if (count) count.textContent = findings.length ? "(" + findings.length + ")" : "";
     if (!findings.length) {
-      body.textContent = "✅ Broadcast matches the room.";
+      body.innerHTML = '<div class="all-clear">✅ Broadcast matches the room</div>';
       return;
     }
     body.innerHTML = findings.map(function (f) {
-      return '<div class="suggestion prio-' + f.severity + '">' +
-               '<div class="msg">' + (f.message || f.kind) + "</div>" +
-             "</div>";
+      return (
+        '<div class="suggestion prio-' + f.severity + '">' +
+          '<div class="top"><span class="chips">' +
+            '<span class="badge">' + f.severity + "</span>" +
+            '<span class="chip channel">Recording feed</span>' +
+          "</span></div>" +
+          '<div class="msg">' + escapeHtml(f.message || f.kind) + "</div>" +
+        "</div>"
+      );
     }).join("");
   }
 
   function render(state) {
     if (!state) return;
+    lastState = state;
     setDot("x32-dot", state.mixer_connected);
     setDot("audio-dot", state.audio_ok);
     // AI dot: lit when a local LLM is reachable; off means basic-alerts mode.
     setDot("ai-dot", !!state.llm_available);
     renderSuggestions(state);
+    renderBroadcast(state);
     renderControls(state);
     renderMetrics(state);
-    renderRecording(state);
   }
 
   function post(url, body) {
@@ -359,6 +449,21 @@
       body: JSON.stringify(body)
     });
   }
+
+  // ---- Tab switching (Suggestions / Broadcast) ----
+  function switchTab(tab) {
+    activeTab = tab;
+    Array.prototype.forEach.call(document.querySelectorAll("#main-tabs .tab"), function (b) {
+      b.classList.toggle("active", b.getAttribute("data-tab") === tab);
+    });
+    document.getElementById("suggestions-list").style.display =
+      tab === "suggestions" ? "" : "none";
+    document.getElementById("broadcast-list").style.display =
+      tab === "broadcast" ? "" : "none";
+  }
+  Array.prototype.forEach.call(document.querySelectorAll("#main-tabs .tab"), function (b) {
+    b.addEventListener("click", function () { switchTab(b.getAttribute("data-tab")); });
+  });
 
   // ---- Controls wiring ----
   document.querySelectorAll("#mode-seg button").forEach(function (b) {
@@ -409,19 +514,50 @@
       });
   });
 
-  // ---- Prompt wiring ----
-  document.getElementById("prompt-form").addEventListener("submit", function (e) {
+  // ---- AI chat wiring (multi-turn conversation with the LLM) ----
+  function renderChatLog() {
+    var log = document.getElementById("chat-log");
+    if (!chatHistory.length) {
+      log.innerHTML = '<div class="chat-empty">Ask the AI coach about your mix…</div>';
+      return;
+    }
+    log.innerHTML = chatHistory.map(function (t) {
+      var cls = t.role === "user" ? "user" : ("bot" + (t.fallback ? " fallback" : ""));
+      return '<div class="chat-msg ' + cls + '">' + escapeHtml(t.content) + "</div>";
+    }).join("");
+    log.scrollTop = log.scrollHeight;
+  }
+
+  document.getElementById("chat-form").addEventListener("submit", function (e) {
     e.preventDefault();
-    var input = document.getElementById("prompt-input");
+    var input = document.getElementById("chat-input");
     var text = input.value.trim();
     if (!text) return;
-    post("/api/prompt", { text: text }).then(function (r) { return r.json(); })
+    // Send the conversation so far (before this turn) for multi-turn context.
+    var prior = chatHistory.map(function (t) {
+      return { role: t.role, content: t.content };
+    });
+    chatHistory.push({ role: "user", content: text });
+    chatHistory.push({ role: "assistant", content: "…", pending: true });
+    renderChatLog();
+    input.value = "";
+
+    post("/api/chat", { message: text, history: prior })
+      .then(function (r) { return r.json(); })
       .then(function (res) {
-        document.getElementById("prompt-ack").textContent = res.message || "Got it.";
-        input.value = "";
+        chatHistory.pop();                          // drop the pending placeholder
+        chatHistory.push({
+          role: "assistant",
+          content: res.reply || "(no reply)",
+          fallback: res.source !== "llm"
+        });
+        renderChatLog();
       })
       .catch(function () {
-        document.getElementById("prompt-ack").textContent = "Could not send.";
+        chatHistory.pop();
+        chatHistory.push({ role: "assistant",
+                           content: "Could not reach the AI.", fallback: true });
+        renderChatLog();
       });
   });
 

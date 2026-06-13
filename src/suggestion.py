@@ -180,6 +180,24 @@ class SuggestionGenerator:
                 return False
         return True
 
+    def chat(
+        self,
+        message: str,
+        history: Optional[List[Dict[str, str]]] = None,
+        mix_summary: str = "",
+    ) -> Tuple[str, SuggestionSource]:
+        """Answer a free-text operator question conversationally (the AI chat).
+
+        Grounds the reply in the current mix (``mix_summary``) and the prior
+        turns (``history``: a list of ``{"role", "content"}`` dicts). Uses the
+        local LLM when available; otherwise returns a helpful fallback. Returns
+        ``(reply_text, source)`` and never raises (failsafe).
+        """
+        return self._invoke(
+            self._build_chat_prompt(message, history or [], mix_summary),
+            lambda: self._chat_fallback(),
+        )
+
     def explain(self, issue: Issue) -> str:
         """The "More" action: a fuller explanation of the issue."""
         message, _ = self._invoke(
@@ -244,13 +262,41 @@ class SuggestionGenerator:
             )
         return header + ask
 
+    def _build_chat_prompt(
+        self, message: str, history: List[Dict[str, str]], mix_summary: str
+    ) -> str:
+        """Compose a conversational prompt from mix context + history + message."""
+        lines: List[str] = []
+        if mix_summary:
+            lines.append(f"Current mix status: {mix_summary}.")
+            lines.append("")
+        for turn in history:
+            role = (turn.get("role") or "").lower() if isinstance(turn, dict) else ""
+            content = turn.get("content", "") if isinstance(turn, dict) else ""
+            if not content:
+                continue
+            who = "Operator" if role == "user" else "Coach"
+            lines.append(f"{who}: {content}")
+        lines.append(f"Operator: {message}")
+        lines.append("Coach:")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _chat_fallback() -> str:
+        """Reply used when no local model is reachable."""
+        return (
+            "I can't reach the local AI model right now, so I can't chat freely. "
+            "The live suggestions are still running — connect Ollama or LM Studio "
+            "to enable conversational help."
+        )
+
     # ------------------------------------------------------------------
     # Fallback (basic alert) templates
     # ------------------------------------------------------------------
 
     @staticmethod
     def _target(issue: Issue) -> str:
-        return issue.channel if issue.channel else "the channel"
+        return issue.channel if issue.channel else "the main mix"
 
     def _fallback_message(self, issue: Issue) -> str:
         target = self._target(issue)

@@ -291,3 +291,69 @@ class TestGenerateAll:
     def test_generate_all_on_empty_list_returns_empty(self):
         generator = SuggestionGenerator(FakeLLMClient())
         assert generator.generate_all([]) == []
+
+
+# ===========================================================================
+# SECTION — Conversational chat (AI Prompt -> real LLM chat)
+# ===========================================================================
+
+class TestChat:
+
+    def test_chat_uses_the_llm_when_available(self):
+        client = FakeLLMClient(response="Try trimming 300 Hz on the vocal.")
+        generator = SuggestionGenerator(client)
+        reply, source = generator.chat("Why does it sound muddy?")
+        assert reply == "Try trimming 300 Hz on the vocal."
+        assert source == SuggestionSource.LLM
+        # The operator's question is in the prompt sent to the model.
+        assert "Why does it sound muddy?" in client.last_prompt
+
+    def test_chat_prompt_includes_history_and_mix_context(self):
+        client = FakeLLMClient(response="ok")
+        generator = SuggestionGenerator(client)
+        generator.chat(
+            "And now?",
+            history=[{"role": "user", "content": "Is the vocal too quiet?"},
+                     {"role": "assistant", "content": "A little — try +2 dB."}],
+            mix_summary="active issues: vocal_masking on Lead Vocal",
+        )
+        prompt = client.last_prompt
+        assert "vocal_masking on Lead Vocal" in prompt
+        assert "Is the vocal too quiet?" in prompt
+        assert "And now?" in prompt
+
+    def test_chat_falls_back_without_a_model(self):
+        generator = SuggestionGenerator()  # no client
+        reply, source = generator.chat("How do I fix feedback?")
+        assert source == SuggestionSource.FALLBACK
+        assert reply                                  # a helpful, non-empty message
+
+    def test_chat_falls_back_when_the_model_errors(self):
+        generator = SuggestionGenerator(RaisingLLMClient())
+        reply, source = generator.chat("Anything?")
+        assert source == SuggestionSource.FALLBACK
+        assert reply
+
+
+# ===========================================================================
+# SECTION — Channel wording: a channel-less issue reads as the main mix
+# ===========================================================================
+
+class TestChannelWording:
+
+    def test_channel_less_issue_refers_to_the_main_mix(self):
+        generator = SuggestionGenerator()  # fallback templates
+        suggestion = generator.generate(
+            make_issue(issue_type=IssueType.CLIPPING, channel=None,
+                       priority=Priority.HIGH, confidence=0.9)
+        )
+        text = suggestion.message.lower()
+        assert "main mix" in text
+        assert "the channel" not in text
+
+    def test_channel_issue_still_uses_the_channel_label(self):
+        generator = SuggestionGenerator()
+        suggestion = generator.generate(
+            make_issue(issue_type=IssueType.VOCAL_MASKING, channel="Lead Vocal")
+        )
+        assert "Lead Vocal" in suggestion.message
