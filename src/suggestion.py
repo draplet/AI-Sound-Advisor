@@ -26,8 +26,6 @@ guidance, satisfying the never-crash failsafe.
 """
 from __future__ import annotations
 
-import json
-import urllib.request
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Callable, Dict, List, Optional, Tuple
@@ -110,84 +108,20 @@ class Suggestion(BaseModel):
 
 
 # ===========================================================================
-# LLM client interface + production implementations
+# LLM client interface
 # ===========================================================================
 
 class LLMClient(ABC):
-    """Interface for a local LLM backend (Mistral 7B via Ollama / LM Studio)."""
+    """Interface for a local LLM backend (Mistral 7B via Ollama / LM Studio).
+
+    Concrete, HTTP-backed implementations (``OllamaLLMClient``,
+    ``LMStudioLLMClient``) live in :mod:`src.llm_client`; build one with
+    ``src.llm_client.build_llm_client()`` and pass it to ``SuggestionGenerator``.
+    """
 
     @abstractmethod
     def generate(self, prompt: str) -> str:
         """Return the model's completion for ``prompt`` (raises on failure)."""
-
-
-class OllamaClient(LLMClient):
-    """Local Mistral 7B via the Ollama HTTP API (/api/generate)."""
-
-    def __init__(
-        self,
-        model: str = "mistral",
-        host: str = "http://localhost:11434",
-        timeout: float = 30.0,
-        system: str = DEFAULT_SYSTEM_PROMPT,
-    ) -> None:
-        self.model = model
-        self.host = host.rstrip("/")
-        self.timeout = timeout
-        self.system = system
-
-    def generate(self, prompt: str) -> str:
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "system": self.system,
-            "stream": False,
-        }
-        request = urllib.request.Request(
-            f"{self.host}/api/generate",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            body = json.loads(response.read().decode("utf-8"))
-        return str(body.get("response", "")).strip()
-
-
-class LMStudioClient(LLMClient):
-    """Local Mistral 7B via the LM Studio OpenAI-compatible API."""
-
-    def __init__(
-        self,
-        model: str = "mistral-7b-instruct",
-        base_url: str = "http://localhost:1234/v1",
-        timeout: float = 30.0,
-        system: str = DEFAULT_SYSTEM_PROMPT,
-    ) -> None:
-        self.model = model
-        self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
-        self.system = system
-
-    def generate(self, prompt: str) -> str:
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": self.system},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.4,
-            "stream": False,
-        }
-        request = urllib.request.Request(
-            f"{self.base_url}/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            body = json.loads(response.read().decode("utf-8"))
-        return str(body["choices"][0]["message"]["content"]).strip()
 
 
 # ===========================================================================

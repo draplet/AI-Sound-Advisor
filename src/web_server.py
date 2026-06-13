@@ -378,14 +378,16 @@ def build_default_app(config: Optional[ServerConfig] = None) -> FastAPI:
     Uses the real microphone capture (SoundDeviceAudioSource) and the standard
     agent set, configured from ``config`` (defaults to ``ServerConfig.from_env()``
     so the mixer IP and audio device come from environment variables — no code
-    edits needed). The local Mistral 7B can be attached by passing an LLMClient
-    to the SuggestionGenerator; omitted here so the app still runs without it.
+    edits needed). The local Mistral 7B is attached automatically when
+    SOUND_ADVISOR_LLM_BACKEND selects one (ollama/lmstudio); otherwise the app
+    runs on Agent 4's built-in basic alerts.
 
     Run live with:
         uvicorn src.web_server:build_default_app --factory
     """
     from src.audio_analysis import AudioAnalysisEngine
     from src.detection import DetectionEngine
+    from src.llm_client import build_llm_client
     from src.mixer_state import MixerStateAgent, UdpOscTransport
     from src.pacing import SuggestionPacingAgent
     from src.suggestion import SuggestionGenerator
@@ -394,7 +396,9 @@ def build_default_app(config: Optional[ServerConfig] = None) -> FastAPI:
     cfg = config or ServerConfig.from_env()
 
     profile_agent = ContextProfileAgent(cfg.profile_dir)
-    generator = SuggestionGenerator()  # attach an LLMClient for instructor text
+    # Local Mistral 7B (Ollama/LM Studio) when configured via env, else None
+    # -> SuggestionGenerator falls back to basic alerts. Failsafe either way.
+    generator = SuggestionGenerator(build_llm_client())
     interaction_agent = UserInteractionAgent(generator, profile_agent)
 
     orchestrator = SystemLoopOrchestrator(
