@@ -99,6 +99,14 @@
   }
   .seg button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
+  /* ---- Detail panel (More / Tell me how) ---- */
+  #detail-panel {
+    margin-top: 14px; padding: 14px 16px; border-radius: 8px;
+    background: #11203a; border: 1px solid #2b4a7a;
+    color: #e8f0ff; font-size: 17px;
+    line-height: 1.5; white-space: pre-wrap;
+  }
+
   /* ---- Prompt panel ---- */
   #prompt-panel form { display: flex; gap: 10px; }
   #prompt-input {
@@ -121,6 +129,7 @@
     <div class="status-indicators">
       <div class="indicator">X32 <span id="x32-dot" class="dot"></span></div>
       <div class="indicator">Audio Input <span id="audio-dot" class="dot"></span></div>
+      <div class="indicator">AI <span id="ai-dot" class="dot"></span></div>
       <div class="indicator">Link <span id="link-dot" class="dot"></span></div>
     </div>
   </header>
@@ -132,6 +141,7 @@
       <div id="suggestions-list">
         <div class="all-clear">✅ Your mix is sounding good</div>
       </div>
+      <div id="detail-panel" style="display:none;"></div>
       <div id="warnings"></div>
     </section>
 
@@ -155,7 +165,25 @@
             <button data-loud="energetic">Energetic</button>
           </div>
         </div>
+        <div class="control-group">
+          <label>Focus Mode</label>
+          <label class="switch">
+            <input type="checkbox" id="focus-toggle" />
+            <span>Show only the most urgent issue</span>
+          </label>
+        </div>
+        <div class="control-group">
+          <label>Calibration</label>
+          <button id="calibrate-btn" type="button">Capture good mix</button>
+          <span id="calibrate-status" class="metrics"></span>
+        </div>
         <div class="metrics" id="metrics-line"></div>
+      </section>
+
+      <section class="panel" id="profile-panel" style="margin-bottom:20px;">
+        <h2>Profile</h2>
+        <button id="save-profile-btn" type="button">Review &amp; save profile</button>
+        <div id="profile-summary" class="metrics" style="margin-top:10px;"></div>
       </section>
 
       <section class="panel" id="prompt-panel">
@@ -166,6 +194,11 @@
           <button type="submit">Send</button>
         </form>
         <div id="prompt-ack"></div>
+      </section>
+
+      <section class="panel" id="recording-panel" style="margin-top:20px;">
+        <h2>Broadcast / Recording</h2>
+        <div id="recording-body" class="metrics">Not monitoring a recording feed.</div>
       </section>
     </div>
   </main>
@@ -209,6 +242,9 @@
           "</div>" +
           '<div class="msg">' + icon + " " + (s.message || s.issue) + "</div>" +
           '<div class="actions">' +
+            '<button data-act="more" data-issue="' + s.issue + '" data-channel="' + channelAttr + '">More</button>' +
+            '<button data-act="tellmehow" data-issue="' + s.issue + '" data-channel="' + channelAttr + '">Tell me how</button>' +
+            '<button data-act="mark-normal" data-issue="' + s.issue + '" data-channel="' + channelAttr + '">Mark normal</button>' +
             '<button data-ignore="' + s.issue + '" data-channel="' + channelAttr + '">Ignore (3 min)</button>' +
           "</div>" +
         "</div>"
@@ -225,6 +261,31 @@
         });
       });
     });
+
+    // Wire the More / Tell me how / Mark normal buttons (Agent 7 actions).
+    Array.prototype.forEach.call(list.querySelectorAll("[data-act]"), function (btn) {
+      btn.addEventListener("click", function () {
+        var ch = btn.getAttribute("data-channel");
+        var act = btn.getAttribute("data-act");
+        var url = act === "more" ? "/api/more"
+                : act === "tellmehow" ? "/api/tellmehow"
+                : "/api/mark-normal";
+        post(url, {
+          issue: btn.getAttribute("data-issue"),
+          channel: ch === "" ? null : ch
+        }).then(function (r) { return r.json(); })
+          .then(function (res) { showDetail(res); })
+          .catch(function () { showDetail({ message: "Could not complete that action." }); });
+      });
+    });
+  }
+
+  // Persistent detail box (lives outside the auto-refreshing suggestions list).
+  function showDetail(res) {
+    var box = document.getElementById("detail-panel");
+    var text = res.detail || res.message || "";
+    box.textContent = text;
+    box.style.display = text ? "block" : "none";
   }
 
   function renderControls(state) {
@@ -234,6 +295,10 @@
     Array.prototype.forEach.call(document.querySelectorAll("#loudness-seg button"), function (b) {
       b.classList.toggle("active", b.getAttribute("data-loud") === state.loudness_mode);
     });
+    var cal = document.getElementById("calibrate-status");
+    if (cal) cal.textContent = state.calibrated ? "✅ Calibrated" : "Not calibrated";
+    var focus = document.getElementById("focus-toggle");
+    if (focus && document.activeElement !== focus) focus.checked = !!state.focus_mode;
   }
 
   function renderMetrics(state) {
@@ -251,13 +316,40 @@
     warn.textContent = (state.warnings || []).join("  ·  ");
   }
 
+  function renderRecording(state) {
+    var body = document.getElementById("recording-body");
+    if (!body) return;
+    var rec = state.recording;
+    if (!rec) {
+      body.textContent = "Not monitoring a recording feed.";
+      return;
+    }
+    if (!rec.available) {
+      body.textContent = "⚠️ Recording/stream feed unavailable.";
+      return;
+    }
+    var findings = rec.findings || [];
+    if (!findings.length) {
+      body.textContent = "✅ Broadcast matches the room.";
+      return;
+    }
+    body.innerHTML = findings.map(function (f) {
+      return '<div class="suggestion prio-' + f.severity + '">' +
+               '<div class="msg">' + (f.message || f.kind) + "</div>" +
+             "</div>";
+    }).join("");
+  }
+
   function render(state) {
     if (!state) return;
     setDot("x32-dot", state.mixer_connected);
     setDot("audio-dot", state.audio_ok);
+    // AI dot: lit when a local LLM is reachable; off means basic-alerts mode.
+    setDot("ai-dot", !!state.llm_available);
     renderSuggestions(state);
     renderControls(state);
     renderMetrics(state);
+    renderRecording(state);
   }
 
   function post(url, body) {
@@ -278,6 +370,43 @@
     b.addEventListener("click", function () {
       post("/api/loudness", { loudness_mode: b.getAttribute("data-loud") });
     });
+  });
+
+  // ---- Profile review & save wiring (end-of-event flow) ----
+  document.getElementById("save-profile-btn").addEventListener("click", function () {
+    var box = document.getElementById("profile-summary");
+    fetch("/api/profile/summary").then(function (r) { return r.json(); })
+      .then(function (sum) {
+        var changes = sum.changes || [];
+        if (!changes.length) {
+          box.textContent = "No new changes to save.";
+          return;
+        }
+        // Show the learned changes, then persist them.
+        box.textContent = "Saving: " + changes.join("  ·  ");
+        return post("/api/profile/save", {}).then(function (r) { return r.json(); })
+          .then(function (res) { box.textContent = res.message || "Saved."; });
+      })
+      .catch(function () {
+        box.textContent = "Could not save the profile.";
+      });
+  });
+
+  // ---- Focus Mode wiring ----
+  document.getElementById("focus-toggle").addEventListener("change", function () {
+    post("/api/focus", { enabled: this.checked });
+  });
+
+  // ---- Calibration wiring ----
+  document.getElementById("calibrate-btn").addEventListener("click", function () {
+    post("/api/calibrate", {}).then(function (r) { return r.json(); })
+      .then(function (res) {
+        document.getElementById("calibrate-status").textContent =
+          res.message || (res.ok ? "✅ Calibrated" : "Could not calibrate.");
+      })
+      .catch(function () {
+        document.getElementById("calibrate-status").textContent = "Could not calibrate.";
+      });
   });
 
   // ---- Prompt wiring ----

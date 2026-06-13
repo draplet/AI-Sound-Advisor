@@ -161,6 +161,25 @@ class SuggestionGenerator:
         """Generate suggestions for a list of issues, preserving order."""
         return [self.generate(issue) for issue in issues]
 
+    def llm_available(self) -> bool:
+        """Whether a local LLM is configured *and* reachable (for the status dot).
+
+        ``False`` when no client is configured (the app runs on basic alerts) or
+        when the configured backend's health probe reports it unreachable. A
+        client without an ``is_available`` probe is assumed available once set.
+        Never raises — a failing probe simply reads as unavailable.
+        """
+        client = self._client
+        if client is None:
+            return False
+        probe = getattr(client, "is_available", None)
+        if callable(probe):
+            try:
+                return bool(probe())
+            except Exception:  # noqa: BLE001 — failsafe: treat as unavailable
+                return False
+        return True
+
     def explain(self, issue: Issue) -> str:
         """The "More" action: a fuller explanation of the issue."""
         message, _ = self._invoke(

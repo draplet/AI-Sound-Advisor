@@ -406,3 +406,334 @@ class TestServerFailsafe:
         resp = env.client.get("/api/state")
         assert resp.status_code == 200
         assert resp.json()["status_message"]
+
+
+# ===========================================================================
+# SECTION 9 — More / Tell me how / Mark as normal (Agent 7 actions)
+# ===========================================================================
+
+class TestSuggestionActions:
+
+    def test_more_returns_detail(self):
+        env = make_env(clipping_metrics())
+        data = env.client.post(
+            "/api/more", json={"issue": "clipping", "channel": "Lead Vocal"}
+        ).json()
+        assert data["action"] == "more"
+        assert data["detail"]                       # a fuller explanation
+
+    def test_tellmehow_returns_steps(self):
+        env = make_env(clipping_metrics())
+        data = env.client.post(
+            "/api/tellmehow", json={"issue": "clipping", "channel": "Lead Vocal"}
+        ).json()
+        assert data["action"] == "tell_me_how"
+        assert data["detail"]                       # numbered step-by-step text
+
+    def test_mark_normal_suppresses_issue(self):
+        env = make_env(clipping_metrics())
+        before = env.client.get("/api/state").json()
+        assert IssueType.CLIPPING.value in {i["issue"] for i in before["issues"]}
+
+        resp = env.client.post("/api/mark-normal", json={"issue": "clipping"})
+        assert resp.status_code == 200
+        assert resp.json()["action"] == "mark_normal"
+        # Agent 7 -> Agent 5: the condition is now learned as normal.
+        assert IssueType.CLIPPING in env.profile_agent.active.suppressed_issues
+        # ...and it no longer surfaces as an issue.
+        after = env.client.get("/api/state").json()
+        assert IssueType.CLIPPING.value not in {i["issue"] for i in after["issues"]}
+
+    def test_action_endpoints_are_failsafe(self):
+        env = make_env(clipping_metrics())
+
+        class BoomAgent:
+            def more(self, *a, **k):
+                raise RuntimeError("boom")
+
+            def how_to(self, *a, **k):
+                raise RuntimeError("boom")
+
+            def mark_normal(self, *a, **k):
+                raise RuntimeError("boom")
+
+        env.app.state.interaction_agent = BoomAgent()
+        for path in ("/api/more", "/api/tellmehow", "/api/mark-normal"):
+            resp = env.client.post(path, json={"issue": "clipping"})
+            assert resp.status_code == 200
+            assert resp.json()["message"]
+
+    def test_page_exposes_action_buttons(self):
+        env = make_env()
+        body = env.client.get("/").text.lower()
+        assert "tell me how" in body
+        assert "more" in body
+        assert "normal" in body
+
+
+# ===========================================================================
+# SECTION 10 — AI/LLM availability indicator (spec CONNECTION STATUS INDICATOR)
+# ===========================================================================
+
+class TestLLMAvailability:
+
+    def test_state_includes_llm_available(self):
+        env = make_env(clean_metrics())
+        data = env.client.get("/api/state").json()
+        assert "llm_available" in data
+        # No LLM client is wired in tests -> basic-alerts mode.
+        assert data["llm_available"] is False
+
+    def test_page_has_ai_indicator(self):
+        env = make_env()
+        body = env.client.get("/").text.lower()
+        assert "ai-dot" in body
+
+
+# ===========================================================================
+# SECTION 11 — Logging System wiring (spec LOGGING SYSTEM)
+# ===========================================================================
+
+from src.event_log import InMemoryLogSink, LogEventType, SessionLogger
+
+
+def make_logged_env():
+    """An env whose app has an in-memory event logger attached."""
+    env = make_env(clipping_metrics())
+    sink = InMemoryLogSink()
+    logger = SessionLogger(sink)
+    env.app.state.event_logger = logger
+    env.orch._event_logger = logger
+    env.sink = sink
+    return env
+
+
+class TestLoggingWiring:
+
+    def test_user_actions_are_logged(self):
+        env = make_logged_env()
+        env.client.post("/api/ignore", json={"issue": "clipping", "channel": None})
+        env.client.post("/api/mark-normal", json={"issue": "clipping"})
+        actions = [r for r in env.sink.read_all()
+                   if r.type == LogEventType.USER_ACTION]
+        logged = {r.data["action"] for r in actions}
+        assert "ignore" in logged
+        assert "mark_normal" in logged
+
+    def test_detected_issues_are_logged_via_ticks(self):
+        env = make_logged_env()
+        env.client.get("/api/state")            # runs a tick -> logs the issue
+        detected = [r for r in env.sink.read_all()
+                    if r.type == LogEventType.ISSUE_DETECTED]
+        assert any(r.data["issue"] == IssueType.CLIPPING.value for r in detected)
+
+    def test_log_review_endpoint_returns_records(self):
+        env = make_logged_env()
+        env.client.get("/api/state")
+        env.client.post("/api/ignore", json={"issue": "clipping", "channel": None})
+        data = env.client.get("/api/log/recent").json()
+        assert isinstance(data["records"], list)
+        assert len(data["records"]) >= 1
+        assert "type" in data["records"][0]
+
+    def test_log_endpoint_without_logger_is_empty_not_an_error(self):
+        env = make_env(clean_metrics())         # no logger wired
+        resp = env.client.get("/api/log/recent")
+        assert resp.status_code == 200
+        assert resp.json()["records"] == []
+
+
+# ===========================================================================
+# SECTION 12 — Calibration Mode (spec CALIBRATION MODE)
+# ===========================================================================
+
+class TestCalibration:
+
+    def test_calibrate_captures_baseline_from_current_audio(self):
+        env = make_env(clean_metrics())
+        assert env.profile_agent.is_calibrated is False
+        resp = env.client.post("/api/calibrate")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert "baseline" in body
+        # Agent 5 now holds a captured good-mix reference.
+        assert env.profile_agent.is_calibrated is True
+
+    def test_state_reports_calibration_status(self):
+        env = make_env(clean_metrics())
+        assert env.client.get("/api/state").json()["calibrated"] is False
+        env.client.post("/api/calibrate")
+        assert env.client.get("/api/state").json()["calibrated"] is True
+
+    def test_calibrate_without_audio_reports_failure(self):
+        env = make_env(clean_metrics(), audio_source=FakeAudioSource(fail=True))
+        body = env.client.post("/api/calibrate").json()
+        assert body["ok"] is False
+        assert env.profile_agent.is_calibrated is False
+
+    def test_calibrate_is_failsafe(self):
+        env = make_env(clean_metrics())
+
+        class Boom:
+            def tick(self, now_ms):
+                raise RuntimeError("kaboom")
+
+        env.app.state.orchestrator = Boom()
+        resp = env.client.post("/api/calibrate")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is False
+
+    def test_page_has_calibration_control(self):
+        env = make_env()
+        body = env.client.get("/").text.lower()
+        assert "calibrat" in body
+
+
+# ===========================================================================
+# SECTION 13 — End-of-event profile save flow (spec PROFILE MANAGEMENT)
+# ===========================================================================
+
+from src.profile_store import ContextProfileAgent as _ProfileAgent
+
+
+class TestProfileSaveFlow:
+
+    def test_summary_reports_learned_changes(self):
+        env = make_env(clean_metrics())
+        env.client.post("/api/mode", json={"mode": "worship"})
+        data = env.client.get("/api/profile/summary").json()
+        assert data["has_unsaved_changes"] is True
+        assert any("worship" in c.lower() for c in data["changes"])
+
+    def test_summary_empty_when_nothing_learned(self):
+        env = make_env(clean_metrics())
+        data = env.client.get("/api/profile/summary").json()
+        assert data["has_unsaved_changes"] is False
+        assert data["changes"] == []
+
+    def test_save_persists_profile_and_clears_changes(self, tmp_path):
+        env = make_env(clean_metrics())
+        # Swap in a disk-backed profile so save() can actually persist.
+        disk_agent = _ProfileAgent(str(tmp_path))
+        env.app.state.profile_agent = disk_agent
+        disk_agent.set_event_type(Scene.WORSHIP)
+        assert disk_agent.has_unsaved_changes is True
+
+        resp = env.client.post("/api/profile/save")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        # The profile file now exists and pending changes are cleared.
+        assert (tmp_path / "default.json").exists()
+        assert disk_agent.has_unsaved_changes is False
+
+    def test_save_is_failsafe_without_storage(self):
+        # make_env uses an in-memory profile (no storage dir) -> save can't write.
+        env = make_env(clean_metrics())
+        resp = env.client.post("/api/profile/save")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is False
+        assert resp.json()["message"]
+
+    def test_page_has_save_control(self):
+        env = make_env()
+        body = env.client.get("/").text.lower()
+        assert "save" in body
+
+
+# ===========================================================================
+# SECTION 14 — Focus Mode (spec FOCUS MODE: show only highest-priority issue)
+# ===========================================================================
+
+def masking_metrics():
+    # Heavy low-mid energy fires BOTH vocal_masking and eq_mud -> 2 issues.
+    return metrics(low_mid=EnergyLevel.HIGH)
+
+
+class TestFocusMode:
+
+    def test_toggle_focus_is_reflected_in_state(self):
+        env = make_env(clean_metrics())
+        assert env.client.get("/api/state").json()["focus_mode"] is False
+        resp = env.client.post("/api/focus", json={"enabled": True})
+        assert resp.status_code == 200
+        assert env.client.get("/api/state").json()["focus_mode"] is True
+
+    def test_focus_shows_only_highest_priority_issue(self):
+        env = make_env(masking_metrics())
+        # Without focus: more than one issue is present.
+        full = env.client.get("/api/state").json()
+        assert len(full["issues"]) >= 2
+
+        env.client.post("/api/focus", json={"enabled": True})
+        focused = env.client.get("/api/state").json()
+        assert len(focused["issues"]) == 1
+        assert len(focused["suggestions"]) <= 1
+        # The retained issue is the highest-priority one (top of the sorted list).
+        assert focused["issues"][0]["issue"] == full["issues"][0]["issue"]
+
+    def test_focus_off_restores_all_issues(self):
+        env = make_env(masking_metrics())
+        env.client.post("/api/focus", json={"enabled": True})
+        env.client.post("/api/focus", json={"enabled": False})
+        data = env.client.get("/api/state").json()
+        assert len(data["issues"]) >= 2
+
+    def test_page_has_focus_control(self):
+        env = make_env()
+        body = env.client.get("/").text.lower()
+        assert "focus" in body
+
+
+# ===========================================================================
+# SECTION 15 — Recording / Broadcast analysis (spec RECORDING ANALYSIS MODULE)
+# ===========================================================================
+
+from src.recording_analysis import RecordingAnalysisEngine
+
+
+class TestRecordingAnalysisWeb:
+
+    def test_state_recording_is_null_without_a_feed(self):
+        env = make_env(clean_metrics())
+        data = env.client.get("/api/state").json()
+        assert "recording" in data
+        assert data["recording"] is None
+
+    def test_state_exposes_recording_analysis_when_wired(self):
+        env = make_env(clean_metrics())
+        # Wire a recorder feed into the orchestrator (stub engine -> matched mix).
+        env.orch._recording_source = FakeAudioSource()
+        env.orch._recording_analysis_engine = RecordingAnalysisEngine.default()
+        data = env.client.get("/api/state").json()
+        assert data["recording"] is not None
+        assert data["recording"]["available"] is True
+        assert "findings" in data["recording"]
+
+    def test_page_has_recording_panel(self):
+        env = make_env()
+        body = env.client.get("/").text.lower()
+        assert "recording" in body or "broadcast" in body
+
+
+class TestRecordingConfig:
+
+    def test_recording_device_defaults_to_none(self):
+        cfg = ServerConfig.from_env({})
+        assert cfg.recording_device is None
+
+    def test_recording_device_env_is_applied(self):
+        cfg = ServerConfig.from_env({"SOUND_ADVISOR_RECORDING_DEVICE": "5"})
+        assert cfg.recording_device == 5
+
+    def test_build_default_app_wires_recording_source_when_configured(self):
+        cfg = ServerConfig(recording_device=4)
+        app = build_default_app(cfg)
+        orch = app.state.orchestrator
+        assert orch._recording_source is not None
+        assert orch._recording_source.device == 4
+        assert orch._recording_analysis_engine is not None
+
+    def test_build_default_app_has_no_recording_source_by_default(self):
+        app = build_default_app(ServerConfig())
+        assert app.state.orchestrator._recording_source is None

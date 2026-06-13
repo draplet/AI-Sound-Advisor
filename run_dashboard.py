@@ -25,6 +25,7 @@ from src.interaction import UserInteractionAgent
 from src.mixer_state import MixerStateAgent, X32OscTransport
 from src.pacing import SuggestionPacingAgent
 from src.profile_store import ContextProfileAgent
+from src.recording_analysis import RecordingAnalysisEngine
 from src.suggestion import SuggestionGenerator
 from src.system_loop import AudioSource, SystemLoopOrchestrator
 from src.web_server import create_app
@@ -71,17 +72,42 @@ class DemoAudioEngine:
         self._ticks_per_state = max(1, ticks_per_state)
         self._calls = 0
 
+    def _current_idx(self) -> int:
+        return (self._calls // self._ticks_per_state) % len(self._STATES)
+
     def analyze(self, samples, sample_rate) -> AudioMetrics:
-        idx = (self._calls // self._ticks_per_state) % len(self._STATES)
-        self._calls += 1
+        # The recorder feed is tagged with a non-zero buffer (see
+        # DemoRecordingSource): return a deliberately mismatched broadcast
+        # version of the current room state so the recording panel shows
+        # findings — quieter (loudness imbalance) and dull (vocal clarity).
+        first = float(np.asarray(samples).reshape(-1)[0])
+        if first != 0.0:
+            room = self._STATES[self._current_idx()]
+            return AudioMetrics(
+                loudness_lufs=room.loudness_lufs - 8.0,
+                peak_level=room.peak_level,
+                low_mid_energy=room.low_mid_energy,
+                high_freq_energy=EnergyLevel.LOW,
+            )
+        idx = self._current_idx()
+        self._calls += 1          # only the room capture advances the cycle
         return self._STATES[idx]
 
 
 class SilentAudioSource(AudioSource):
-    """Returns a dummy buffer; the DemoAudioEngine ignores it anyway."""
+    """The room/main capture: returns a zero buffer (the DemoAudioEngine cycles
+    states by call count, not buffer content)."""
 
     def capture(self):
         return np.zeros(2_048), 48_000
+
+
+class DemoRecordingSource(AudioSource):
+    """The recorder/stream feed: a non-zero buffer tags it so DemoAudioEngine
+    returns the mismatched broadcast metrics."""
+
+    def capture(self):
+        return np.ones(2_048), 48_000
 
 
 def build_demo_app():
@@ -102,6 +128,8 @@ def build_demo_app():
         suggestion_generator=generator,
         interaction_agent=interaction_agent,
         channels=(3,),
+        recording_source=DemoRecordingSource(),
+        recording_analysis_engine=RecordingAnalysisEngine.default(),
     )
     return create_app(
         orchestrator=orchestrator,

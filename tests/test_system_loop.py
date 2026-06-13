@@ -162,14 +162,18 @@ def make(audio_metrics: AudioMetrics = None,
          audio_source: FakeAudioSource = None,
          real_engine: bool = False,
          detection_engine=None,
-         channels=(3,)):
+         channels=(3,),
+         audio_engine=None,
+         recording_source=None,
+         recording_engine=None):
     transport = transport or FakeX32Transport()
     audio_source = audio_source or FakeAudioSource()
 
-    if real_engine:
-        audio_engine = AudioAnalysisEngine.default()
-    else:
-        audio_engine = StubAudioEngine(audio_metrics or clean_metrics())
+    if audio_engine is None:
+        if real_engine:
+            audio_engine = AudioAnalysisEngine.default()
+        else:
+            audio_engine = StubAudioEngine(audio_metrics or clean_metrics())
 
     mixer_agent = MixerStateAgent(transport)
     detection = detection_engine or DetectionEngine.default()
@@ -188,6 +192,8 @@ def make(audio_metrics: AudioMetrics = None,
         suggestion_generator=generator,
         interaction_agent=interaction_agent,
         channels=channels,
+        recording_source=recording_source,
+        recording_analysis_engine=recording_engine,
     )
     return SimpleNamespace(
         orch=orch, transport=transport, audio_source=audio_source,
@@ -195,6 +201,7 @@ def make(audio_metrics: AudioMetrics = None,
         detection=detection, profile_agent=profile_agent,
         pacing_agent=pacing_agent, generator=generator,
         interaction_agent=interaction_agent,
+        recording_source=recording_source,
     )
 
 
@@ -445,3 +452,181 @@ class TestRealAudioEngineIntegration:
         assert frame.audio_ok is True
         assert frame.metrics is not None
         assert isinstance(frame.metrics, AudioMetrics)
+
+
+# ===========================================================================
+# SECTION 10 — AI/LLM availability indicator
+# (spec CONNECTION STATUS INDICATOR: "AI/LLM availability ... update in real time")
+# ===========================================================================
+
+class FakeHealthClient:
+    """A stand-in LLM client exposing a health probe and counting probes."""
+
+    def __init__(self, available=True):
+        self.available = available
+        self.probes = 0
+
+    def generate(self, prompt):
+        return "ok"
+
+    def is_available(self):
+        self.probes += 1
+        return self.available
+
+
+def _make_with_client(client):
+    """Wire an orchestrator whose Agent 4 uses ``client``."""
+    env = make(clean_metrics())
+    env.orch._suggestion_generator._client = client
+    return env
+
+
+class TestLLMAvailabilityIndicator:
+
+    def test_no_client_reports_unavailable(self):
+        env = make(clean_metrics())              # SpyGenerator has no client
+        frame = env.orch.tick(now_ms=1_000)
+        assert frame.llm_available is False
+
+    def test_reachable_client_reports_available(self):
+        env = _make_with_client(FakeHealthClient(available=True))
+        frame = env.orch.tick(now_ms=1_000)
+        assert frame.llm_available is True
+
+    def test_unreachable_client_reports_unavailable(self):
+        env = _make_with_client(FakeHealthClient(available=False))
+        frame = env.orch.tick(now_ms=1_000)
+        assert frame.llm_available is False
+
+    def test_probe_is_cached_not_run_every_tick(self):
+        # PERFORMANCE: must not health-probe the model on every 250ms loop.
+        client = FakeHealthClient(available=True)
+        env = _make_with_client(client)
+        env.orch.run(ticks=10, interval_ms=250, start_ms=0)
+        assert client.probes < 10               # cached between probes
+
+    def test_probe_refreshes_after_interval(self):
+        client = FakeHealthClient(available=True)
+        env = _make_with_client(client)
+        env.orch.tick(now_ms=0)
+        env.orch.tick(now_ms=60_000)            # well past the probe interval
+        assert client.probes >= 2
+
+
+# ===========================================================================
+# SECTION 11 — Automatic change detection
+# (spec CHANGE DETECTION: "pause associated suggestions 2-4s after a change")
+# ===========================================================================
+
+class TestChangeDetection:
+
+    def test_no_pause_on_the_first_tick(self):
+        env = make(masking_metrics())
+        env.orch.tick(now_ms=1_000)
+        # Nothing to compare against yet -> no spurious pause.
+        assert env.pacing_agent.is_paused("Lead Vocal", 1_000) is False
+
+    def test_fader_move_pauses_that_channel(self):
+        env = make(masking_metrics())
+        env.orch.tick(now_ms=1_000)             # baseline (fader 0.25)
+        env.transport.fader = 0.75              # operator pushes the fader up
+        env.orch.tick(now_ms=1_250)
+        assert env.pacing_agent.is_paused("Lead Vocal", 1_250) is True
+
+    def test_mute_toggle_pauses_that_channel(self):
+        env = make(masking_metrics())
+        env.orch.tick(now_ms=1_000)
+        env.transport.on = 0                    # operator mutes the channel
+        env.orch.tick(now_ms=1_250)
+        assert env.pacing_agent.is_paused("Lead Vocal", 1_250) is True
+
+    def test_sudden_loudness_jump_pauses_globally(self):
+        env = make(clean_metrics())
+        env.orch.tick(now_ms=1_000)             # baseline (-22 LUFS)
+        env.audio_engine.metrics = metrics(loudness=-8.0)   # big sudden jump
+        env.orch.tick(now_ms=1_250)
+        assert env.pacing_agent.is_paused(None, 1_250) is True
+
+    def test_steady_state_does_not_pause(self):
+        env = make(masking_metrics())
+        env.orch.tick(now_ms=1_000)
+        env.orch.tick(now_ms=1_250)             # nothing changed
+        assert env.pacing_agent.is_paused("Lead Vocal", 1_250) is False
+
+
+# ===========================================================================
+# SECTION 12 — Recording / Broadcast Analysis integration
+# (spec RECORDING ANALYSIS MODULE: compare the recorder feed against the room)
+# ===========================================================================
+
+from src.recording_analysis import RecordingAnalysisEngine
+
+
+class FakeRecordingSource(AudioSource):
+    """Second audio input: the recorder/stream feed. ``level`` tags the buffer
+    so a TaggedEngine can return distinct metrics for room vs recording."""
+
+    def __init__(self, level=1.0, fail=False):
+        self.level = level
+        self.fail = fail
+        self.calls = 0
+
+    def capture(self):
+        self.calls += 1
+        if self.fail:
+            raise OSError("recorder feed lost")
+        return np.full(2_048, self.level), 48_000
+
+
+class TaggedEngine:
+    """Returns ``recording`` metrics for non-zero buffers (the feed) and
+    ``room`` metrics for zero buffers (the room source)."""
+
+    def __init__(self, room, recording):
+        self.room = room
+        self.recording = recording
+
+    def analyze(self, samples, sample_rate):
+        first = float(np.asarray(samples).reshape(-1)[0])
+        return self.recording if first != 0.0 else self.room
+
+
+class TestRecordingAnalysisIntegration:
+
+    def test_no_recording_source_means_no_recording_field(self):
+        env = make(clean_metrics())
+        frame = env.orch.tick(now_ms=1_000)
+        assert frame.recording is None
+
+    def test_recording_feed_is_analysed_against_the_room(self):
+        # Room at -23 LUFS, recorder feed 12 dB louder -> a loudness imbalance.
+        engine = TaggedEngine(room=metrics(loudness=-23.0),
+                              recording=metrics(loudness=-11.0))
+        env = make(audio_engine=engine,
+                   recording_source=FakeRecordingSource(level=1.0),
+                   recording_engine=RecordingAnalysisEngine.default())
+        frame = env.orch.tick(now_ms=1_000)
+        assert frame.recording is not None
+        assert frame.recording.available is True
+        assert len(frame.recording.findings) >= 1
+
+    def test_matched_feed_is_all_clear(self):
+        engine = TaggedEngine(room=metrics(loudness=-20.0),
+                              recording=metrics(loudness=-20.0))
+        env = make(audio_engine=engine,
+                   recording_source=FakeRecordingSource(level=1.0),
+                   recording_engine=RecordingAnalysisEngine.default())
+        frame = env.orch.tick(now_ms=1_000)
+        assert frame.recording.available is True
+        assert frame.recording.all_clear is True
+
+    def test_lost_recording_feed_is_failsafe(self):
+        env = make(clean_metrics(),
+                   recording_source=FakeRecordingSource(fail=True),
+                   recording_engine=RecordingAnalysisEngine.default())
+        frame = env.orch.tick(now_ms=1_000)
+        # The loop still produces a frame; the room analysis is unaffected.
+        assert frame.audio_ok is True
+        assert frame.recording is not None
+        assert frame.recording.available is False
+        assert any("record" in w.lower() for w in frame.warnings)

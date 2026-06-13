@@ -44,6 +44,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from src.detection import Issue, IssueType, Priority, confidence_level
+from src.event_log import SessionLogger
 from src.interaction import IGNORE_DEFAULT_MS, UserInteractionAgent
 from src.mixer_state import X32_OSC_PORT
 from src.profile_store import ContextProfileAgent
@@ -129,6 +130,9 @@ class ServerConfig(BaseModel):
     sample_rate: int = 48_000
     audio_channels: int = 1
     profile_dir: str = "profiles"
+    log_dir: str = "logs"
+    #: Optional recorder/stream feed input device (enables recording analysis).
+    recording_device: Optional[Union[int, str]] = None
 
     @classmethod
     def from_env(cls, environ: Optional[Mapping[str, str]] = None) -> "ServerConfig":
@@ -142,6 +146,8 @@ class ServerConfig(BaseModel):
             sample_rate=_env_int(env, f"{ENV_PREFIX}SAMPLE_RATE", 48_000),
             audio_channels=_env_int(env, f"{ENV_PREFIX}AUDIO_CHANNELS", 1),
             profile_dir=env.get(f"{ENV_PREFIX}PROFILE_DIR") or "profiles",
+            log_dir=env.get(f"{ENV_PREFIX}LOG_DIR") or "logs",
+            recording_device=_env_device(env, f"{ENV_PREFIX}RECORDING_DEVICE"),
         )
 
 
@@ -167,6 +173,31 @@ class IgnoreRequest(BaseModel):
     issue: IssueType
     channel: Optional[str] = None
     duration_ms: int = IGNORE_DEFAULT_MS
+
+
+class IssueActionRequest(BaseModel):
+    """Identifies the issue an operator acted on (More / Tell me how / Mark normal)."""
+
+    issue: IssueType
+    channel: Optional[str] = None
+
+
+class FocusRequest(BaseModel):
+    """Toggle for Focus Mode (show only the highest-priority issue)."""
+
+    enabled: bool
+
+
+def _issue_from(req: "IssueActionRequest") -> Issue:
+    """Rebuild a minimal Issue for an Agent 7 action.
+
+    The action handlers key only on ``(issue, channel)``; priority/confidence
+    are placeholders (mirrors how /api/ignore reconstructs an Issue).
+    """
+    return Issue(
+        issue=req.issue, channel=req.channel,
+        priority=Priority.LOW, confidence=0.0,
+    )
 
 
 # ===========================================================================
@@ -227,17 +258,36 @@ def _degraded_payload() -> dict:
         "warnings": [SERVER_DEGRADED_STATUS],
         "scene": Scene.SERMON.value,
         "loudness_mode": LoudnessMode.CONSERVATIVE.value,
+        "calibrated": False,
+        "focus_mode": False,
+        "recording": None,
     }
+
+
+def _apply_focus(payload: dict) -> None:
+    """Trim the payload to only the highest-priority issue (Focus Mode).
+
+    The orchestrator already returns issues sorted by spec priority (then
+    confidence), and the display suggestions are built in that same order, so
+    the most urgent item is the first of each list.
+    """
+    payload["issues"] = (payload.get("issues") or [])[:1]
+    payload["suggestions"] = (payload.get("suggestions") or [])[:1]
 
 
 def _tick_payload(app: FastAPI) -> dict:
     """Run one orchestrator tick and build the UI payload (never raises)."""
+    focus = bool(getattr(app.state, "focus_mode", False))
     try:
         orchestrator = app.state.orchestrator
         frame = orchestrator.tick(app.state.clock())
-        return _build_payload(frame, app.state.suggestion_cache)
+        payload = _build_payload(frame, app.state.suggestion_cache)
     except Exception:  # noqa: BLE001 — failsafe: never take the dashboard down
-        return _degraded_payload()
+        payload = _degraded_payload()
+    payload["focus_mode"] = focus
+    if focus:
+        _apply_focus(payload)
+    return payload
 
 
 # ===========================================================================
@@ -252,6 +302,7 @@ def create_app(
     clock: Optional[Callable[[], int]] = None,
     ws_interval_ms: int = DEFAULT_WS_INTERVAL_MS,
     template_path: Optional[Path] = None,
+    event_logger: Optional[SessionLogger] = None,
 ) -> FastAPI:
     """Build the dashboard FastAPI app around a wired orchestrator."""
     app = FastAPI(title="AI Sound Advisor")
@@ -263,6 +314,23 @@ def create_app(
     app.state.ws_interval_ms = ws_interval_ms
     app.state.template_path = Path(template_path) if template_path else TEMPLATE_PATH
     app.state.suggestion_cache: Dict[IssueKey, object] = {}
+    #: Optional logging system (spec LOGGING SYSTEM); None disables logging.
+    app.state.event_logger = event_logger
+    #: Focus Mode: when True, only the highest-priority issue is shown.
+    app.state.focus_mode = False
+
+    def _log_action(action: str, channel: Optional[str] = None,
+                    detail: Optional[str] = None) -> None:
+        """Record a user action if a logger is attached (never raises)."""
+        logger = app.state.event_logger
+        if logger is None:
+            return
+        try:
+            logger.log_user_action(
+                action, now_ms=app.state.clock(), channel=channel, detail=detail
+            )
+        except Exception:  # noqa: BLE001 — failsafe
+            pass
 
     # ------------------------------------------------------------------
     # Page (step 9: display in UI)
@@ -304,6 +372,12 @@ def create_app(
             return JSONResponse({"ok": False}, status_code=200)
         return JSONResponse({"ok": True, "loudness_mode": req.loudness_mode.value})
 
+    @app.post("/api/focus")
+    def set_focus(req: FocusRequest) -> JSONResponse:
+        app.state.focus_mode = bool(req.enabled)
+        _log_action("focus_on" if app.state.focus_mode else "focus_off")
+        return JSONResponse({"ok": True, "focus_mode": app.state.focus_mode})
+
     # ------------------------------------------------------------------
     # AI prompt panel (Agent 7 -> Agent 5)
     # ------------------------------------------------------------------
@@ -320,6 +394,7 @@ def create_app(
             result = app.state.interaction_agent.handle_prompt(
                 req.text, now_ms=app.state.clock(), issue=issue
             )
+            _log_action(result.action.value, detail=req.text)
             return JSONResponse(result.model_dump(mode="json"))
         except Exception:  # noqa: BLE001 — failsafe
             return JSONResponse(
@@ -341,12 +416,123 @@ def create_app(
             result = app.state.interaction_agent.ignore(
                 issue, now_ms=app.state.clock(), duration_ms=req.duration_ms
             )
+            _log_action("ignore", channel=req.channel)
             return JSONResponse(result.model_dump(mode="json"))
         except Exception:  # noqa: BLE001 — failsafe
             return JSONResponse(
                 {"action": "ignore", "message": "Could not ignore that."},
                 status_code=200,
             )
+
+    # ------------------------------------------------------------------
+    # Suggestion actions (Agent 7: More / Tell me how / Mark as normal)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/more")
+    def more_detail(req: IssueActionRequest) -> JSONResponse:
+        try:
+            result = app.state.interaction_agent.more(_issue_from(req))
+            _log_action("more", channel=req.channel)
+            return JSONResponse(result.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse(
+                {"action": "more", "message": "Could not load more detail."},
+                status_code=200,
+            )
+
+    @app.post("/api/tellmehow")
+    def tell_me_how(req: IssueActionRequest) -> JSONResponse:
+        try:
+            result = app.state.interaction_agent.how_to(_issue_from(req))
+            _log_action("tell_me_how", channel=req.channel)
+            return JSONResponse(result.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse(
+                {"action": "tell_me_how", "message": "Could not load the steps."},
+                status_code=200,
+            )
+
+    @app.post("/api/mark-normal")
+    def mark_normal(req: IssueActionRequest) -> JSONResponse:
+        try:
+            result = app.state.interaction_agent.mark_normal(_issue_from(req))
+            _log_action("mark_normal", channel=req.channel)
+            return JSONResponse(result.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse(
+                {"action": "mark_normal", "message": "Could not mark that as normal."},
+                status_code=200,
+            )
+
+    # ------------------------------------------------------------------
+    # End-of-event profile save flow (Agent 5: summary + persist)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/profile/summary")
+    def profile_summary() -> JSONResponse:
+        try:
+            agent = app.state.profile_agent
+            return JSONResponse({
+                "has_unsaved_changes": bool(agent.has_unsaved_changes),
+                "changes": list(agent.pending_changes()),
+            })
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse({"has_unsaved_changes": False, "changes": []})
+
+    @app.post("/api/profile/save")
+    def profile_save() -> JSONResponse:
+        try:
+            path = app.state.profile_agent.save()
+            _log_action("save_profile")
+            return JSONResponse({
+                "ok": True,
+                "message": f"Profile saved to {path.name}.",
+            })
+        except Exception:  # noqa: BLE001 — failsafe (e.g. no storage configured)
+            return JSONResponse(
+                {"ok": False, "message": "Could not save the profile."},
+                status_code=200,
+            )
+
+    # ------------------------------------------------------------------
+    # Calibration mode (Agent 5: capture a "good mix" baseline)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/calibrate")
+    def calibrate() -> JSONResponse:
+        try:
+            frame = app.state.orchestrator.tick(app.state.clock())
+            if frame.metrics is None:
+                return JSONResponse(
+                    {"ok": False, "message": "No audio to calibrate from."},
+                    status_code=200,
+                )
+            baseline = app.state.profile_agent.calibrate(frame.metrics)
+            _log_action("calibrate")
+            return JSONResponse({
+                "ok": True,
+                "message": "Captured this mix as the good-mix baseline.",
+                "baseline": baseline.model_dump(mode="json"),
+            })
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse(
+                {"ok": False, "message": "Could not calibrate."}, status_code=200
+            )
+
+    # ------------------------------------------------------------------
+    # Logging system review (spec: post-service review)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/log/recent")
+    def recent_log(limit: int = 100) -> JSONResponse:
+        logger = app.state.event_logger
+        if logger is None:
+            return JSONResponse({"records": []})
+        try:
+            records = [r.model_dump(mode="json") for r in logger.recent(limit)]
+            return JSONResponse({"records": records})
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse({"records": []})
 
     # ------------------------------------------------------------------
     # Real-time WebSocket push
@@ -387,9 +573,11 @@ def build_default_app(config: Optional[ServerConfig] = None) -> FastAPI:
     """
     from src.audio_analysis import AudioAnalysisEngine
     from src.detection import DetectionEngine
+    from src.event_log import JsonlFileSink, SessionLogger
     from src.llm_client import build_llm_client
     from src.mixer_state import MixerStateAgent, UdpOscTransport
     from src.pacing import SuggestionPacingAgent
+    from src.recording_analysis import RecordingAnalysisEngine
     from src.suggestion import SuggestionGenerator
     from src.system_loop import SoundDeviceAudioSource
 
@@ -400,6 +588,22 @@ def build_default_app(config: Optional[ServerConfig] = None) -> FastAPI:
     # -> SuggestionGenerator falls back to basic alerts. Failsafe either way.
     generator = SuggestionGenerator(build_llm_client())
     interaction_agent = UserInteractionAgent(generator, profile_agent)
+    # Append-only session log for post-service review (spec LOGGING SYSTEM).
+    event_logger = SessionLogger(
+        JsonlFileSink(Path(cfg.log_dir) / "session.jsonl")
+    )
+
+    # Optional recorder/stream feed analysis (spec RECORDING ANALYSIS MODULE):
+    # only enabled when a recording input device is configured.
+    recording_source = None
+    recording_engine = None
+    if cfg.recording_device is not None:
+        recording_source = SoundDeviceAudioSource(
+            sample_rate=cfg.sample_rate,
+            channels=cfg.audio_channels,
+            device=cfg.recording_device,
+        )
+        recording_engine = RecordingAnalysisEngine.default()
 
     orchestrator = SystemLoopOrchestrator(
         audio_source=SoundDeviceAudioSource(
@@ -418,9 +622,13 @@ def build_default_app(config: Optional[ServerConfig] = None) -> FastAPI:
         pacing_agent=SuggestionPacingAgent(),
         suggestion_generator=generator,
         interaction_agent=interaction_agent,
+        event_logger=event_logger,
+        recording_source=recording_source,
+        recording_analysis_engine=recording_engine,
     )
     return create_app(
         orchestrator=orchestrator,
         profile_agent=profile_agent,
         interaction_agent=interaction_agent,
+        event_logger=event_logger,
     )
