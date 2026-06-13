@@ -1,0 +1,494 @@
+Project: AI Sound Advisor
+
+Goal:
+Build a real-time AI assistant that monitors a Behringer X32 mixer and live audio,
+analyzes sound quality, and provides prioritized, human-friendly suggestions to a sound engineer.
+
+***SYSTEM OVERVIEW
+The system must:
+- Continuously operate in the background
+- Analyze both mixer data (OSC) and audio (main + room mic)
+- Detect sound issues (clipping, vocal masking, EQ problems, loudness, etc.)
+- Generate clear, instructor-style recommendations
+- Learn user preferences over time via profiles
+- Avoid overwhelming the user with excessive suggestions
+
+***TECHNOLOGY STACK
+
+Language:
+- Python (primary backend)
+
+Audio Processing Libraries:
+- librosa → FFT, spectral analysis
+- pyloudnorm → LUFS loudness calculation
+- numpy → numeric operations
+- scipy → signal processing
+
+Audio Input:
+- sounddevice OR PyAudio (for real-time audio capture)
+
+OSC / X32 Communication:
+- python-osc (UDP/OSC communication with X32)
+
+AI / LLM:
+- Mistral 7B (local model)
+- Run via:
+  - Ollama OR
+  - LM Studio API
+
+Web Backend:
+- FastAPI (preferred)
+- OR Flask (simpler alternative)
+
+Frontend:
+- React (preferred long-term)
+- OR simple HTML + JavaScript (V1 prototype)
+
+Real-time Communication:
+- WebSockets (preferred)
+- OR HTTP polling (fallback)
+
+Data Storage:
+- JSON files for profiles and logs (V1)
+- Optional: SQLite (future)
+
+Optional Extensions:
+- torchaudio (advanced audio processing)
+- webrtcvad (voice detection)
+
+AGENT ARCHITECTURE
+***AGENT 1: Audio Analysis Agent
+Purpose:
+Analyze incoming audio streams in real time.
+
+Inputs:
+- Main mix audio
+- Room microphone audio
+- Recorder Output (USB / bus / stream feed)
+
+Responsibilities:
+Calculate LUFS loudness using pyloudnorm
+- Perform FFT frequency analysis using librosa
+- Detect peaks using numpy/scipy
+- Output structured metrics
+
+Output Example:
+{
+  "loudness_lufs": -15,
+  "peak_level": -1.2,
+  "low_mid_energy": "high",
+  "high_freq_energy": "normal"
+}
+
+***AGENT 2: Mixer State Agent (OSC)
+Purpose:
+Monitor and track X32 mixer state via OSC.
+
+Inputs:
+- X32 network connection (IP + UDP)
+
+Responsibilities:
+- Read channel levels (faders, gain)
+- Read mute states
+- Read channel labels
+- Track buses, FX sends, etc.
+
+Output Example:
+{
+  "channel_3": {
+    "name": "Lead Vocal",
+    "fader": -10,
+    "mute": false
+  }
+}
+
+***AGENT 3: Detection Engine
+Purpose:
+Combine audio + mixer data to detect sound issues.
+
+Inputs:
+- Audio metrics (Agent 1)
+- Mixer state (Agent 2)
+- Profile data
+
+Responsibilities:
+- Detect:
+  - Feedback risk
+  - Vocal masking
+  - Clipping
+  - Loudness issues
+  - EQ problems (mud, harshness, frequency range)
+- Assign priority
+- Calculate confidence score
+
+Output Example:
+{
+  "issue": "vocal_masking",
+  "channel": "Lead Vocal",
+  "priority": "high",
+  "confidence": 0.9
+}
+
+CONFIDENCE CALCULATION
+
+Factors:
+- Signal strength
+- Duration of issue
+- Agreement between:
+  - Room mic
+  - Board data
+- Consistency over time
+
+Output:
+- High (>0.8)
+- Medium (0.5–0.8)
+- Low (<0.5)
+
+***AGENT 4: Suggestion Generator (LLM — Mistral 7B)
+Purpose:
+Convert structured issues into clear, instructor-style guidance.
+
+Inputs:
+- Issue objects from Detection Engine
+
+Responsibilities:
+- Generate short, actionable suggestions
+- Maintain instructor tone
+- Provide optional detailed explanation ("More")
+- Provide step-by-step instructions ("Tell me how")
+
+Example Output:
+"Channel 3 vocals are slightly buried under music. Increase the vocal level or reduce band levels slightly."
+
+Example (Tell Me How):
+1. Select Channel 3
+2. Raise fader by 2–4 dB
+3. Adjust EQ if needed
+
+***AGENT 5: Context & Profile Agent
+Purpose:
+Store and apply learned knowledge and environment configuration.
+
+Responsibilities:
+- Manage profiles (load/save)
+- Store user instructions and overrides
+- Track "normal" conditions
+- Apply learned behavior
+
+Profile Contents:
+- Event type (sermon, worship, play)
+- Room size and characteristics
+- Acoustic sources (drums, piano)
+- User overrides (e.g., "piano is normally loud")
+
+***AGENT 6: Suggestion Pacing Agent
+Purpose:
+Control the timing and frequency of suggestions.
+
+Rules:
+- New issue → immediate suggestion
+- Ongoing issue → repeat every 10–30 seconds
+- After user change → pause 2–4 seconds
+- No issues → display:
+  "Your mix is sounding good"
+
+Prevents excessive or rapid suggestions.
+AGENT 7: User Interaction Agent
+Purpose:
+Handle user controls and input.
+
+Features:
+- Ignore suggestion (temporary, e.g. 3 minutes)
+- Mark condition as normal (profile learning)
+- "More" button for detailed explanation
+- "Tell Me How" button for step-by-step instructions
+- Prompt interface for user input
+
+Example User Inputs:
+"The piano is always loud"
+"This is a quiet service"
+"Ignore this for now"
+
+***SYSTEM LOOP
+Loop every 0.25–0.5 seconds:
+
+1. Capture audio data
+2. Read X32 mixer state
+3. Analyze audio (LUFS, FFT, Peaks)
+4. Detect issues
+5. Apply profile + user overrides
+6. Score priority + confidence
+7. Check pacing rules
+8. Generate suggestions (LLM)
+9. Display in UI
+
+***PRIORITY SYSTEM
+1. Feedback (critical)
+2. Vocal clarity
+   - Sermon clarity highest
+   - Worship vocals next
+3. Clipping
+4. Loudness
+5. Balance
+
+*** MODES (Scene Awareness)
+System detects or allows selection:
+
+- Sermon
+- Worship
+- Play
+- Custom
+
+Adjusts:
+- Priority weights
+- Loudness targets
+- Suggestion behavior
+
+***LOUDNESS MODES
+- Conservative (default)
+- Balanced
+- Energetic
+
+Affects LUFS thresholds and warnings.
+
+***PROFILE MANAGEMENT
+Profile updates occur:
+
+1. Real-time:
+   - Store temporary overrides
+   - Track user behavior
+
+2. End of event:
+   - Prompt user to save updates
+   - Show summary of learned changes
+
+Profiles store:
+- User instructions
+- Normal conditions
+- Environment configuration
+
+***AI BEHAVIOR RULES
+- Do NOT control the mixer automatically
+- Only provide advice
+- Always prefer clarity over verbosity
+- Maintain instructor tone
+- Output must be concise and actionable
+- Use channel labels when available
+
+***OUTPUT FORMAT
+Suggestion structure:
+
+[Priority Icon] Message
+Confidence: High / Medium / Low
+
+Example:
+
+🔴 Channel 3 vocals are slightly buried under music
+Confidence: High
+
+***SUCCESS CRITERIA
+System is successful if:
+- Suggestions are helpful and not overwhelming
+- Users trust recommendations
+- System adapts to real-world environment
+- Works smoothly during live services
+
+***UI / FRONTEND AGENT (Web-Based)
+AGENT: Web UI / Dashboard Agent
+
+Purpose:
+Provide a real-time, user-friendly interface for the AI Sound Advisor system.
+
+Platform:
+- Web-based UI hosted locally (accessible via browser)
+- Backend: Python (FastAPI)
+- Frontend: React (preferred) or simple HTML/JS for V1
+
+Core Features:
+
+1. Suggestions Panel (Primary View)
+- Displays prioritized list of issues
+- Each suggestion includes:
+  - Message
+  - Priority (color-coded: red, yellow, blue)
+  - Confidence level (High / Medium / Low)
+  - Action buttons:
+      [More]
+      [Tell me how]
+      [Ignore]
+
+- When no issues are active:
+  Display:
+  "✅ Your mix is sounding good"
+
+2. Controls Panel
+- Mode selector:
+  - Sermon / Worship / Play / Custom
+- Loudness mode:
+  - Conservative / Balanced / Energetic
+- Profile management:
+  - Load
+  - Save
+- Device status:
+  - X32 connection
+  - Audio input status
+
+3. AI Prompt Panel
+- Input box for user instructions
+- Example inputs:
+  - "The piano is always loud"
+  - "This is a quiet service"
+  - "Ignore choir balance"
+- Sends input to Context/Profile Agent
+
+4. Interaction Behavior
+- Real-time updates (2–4 times per second)
+- Only shows new or important changes
+- Prevents rapid or repeated suggestion spam
+
+5. User Actions
+- Ignore:
+  - Temporary suppression (e.g., 3 minutes)
+- Mark as Normal:
+  - Stores condition for profile learning
+- "More":
+  - Expands explanation
+- "Tell me how":
+  - Shows step-by-step X32 instructions
+
+6. Visual Design Requirements
+- Clean and minimal
+- High contrast (visible in low lighting booth)
+- Large readable text
+- Color-coded priorities:
+  - Red = urgent
+  - Yellow = warning
+  - Blue/Green = informational
+
+7. Responsiveness
+- Must work on:
+  - Desktop monitor (primary)
+  - Tablet (secondary)
+- Layout should adjust automatically
+
+8. Backend Communication
+- UI receives updates via:
+  - WebSocket or polling API
+- UI sends user actions back to backend agents
+
+***CALIBRATION MODE
+Purpose:
+Capture a “good mix” reference for this environment.
+
+Behavior:
+- User starts calibration during a well-mixed service
+- System records:
+  - LUFS levels
+  - Frequency distribution
+  - Vocal/music balance
+- Saves as baseline profile
+
+***SYSTEM STATE MANAGER
+Tracks:
+- Current active issues
+- Recently resolved issues
+- Ignored issues (with timers)
+- Current scene/mode
+- Current loudness state
+
+***ISSUE LIFECYCLE
+States:
+- detected
+- active
+- improving
+- resolved
+- ignored
+
+Rules:
+- Issue must persist for X ms before showing
+- Issue must clear for X ms before removal
+
+***CHANGE DETECTION
+System detects:
+- User adjustment on mixer
+- Sudden change in audio
+
+Behavior:
+- Pause associated suggestions for 2–4 seconds after change
+- Re-evaluate before suggesting again
+
+***PERFORMANCE RULES
+- Max CPU usage target: < 50%
+- LLM calls limited to:
+  - New issues only
+  - Not every loop
+- Audio analysis prioritizes real-time speed over precision
+
+***FAILSAFE BEHAVIOR
+
+If:
+- X32 disconnects → show warning
+- Audio input lost → show warning
+- AI model fails → fallback to basic alerts
+
+System must never crash during service 
+
+***LOGGING SYSTEM
+Record:
+- Issues detected
+- User actions
+- Audio metrics
+
+Allows:
+- Post-service review
+- Training improvements
+
+***FOCUS MODE
+- Show only highest priority issue
+- Hide lower-level suggestions
+
+Used for:
+- Beginner operators
+- High-stress situations
+
+
+***RECORDING ANALYSIS MODULE
+Analyzes:
+- Audio sent to recording/stream
+
+Detects:
+- Vocal clarity differences
+- Loudness imbalance
+- Mix inconsistencies vs room
+
+Purpose:
+Improve broadcast/recording quality
+
+***SYSTEM SETUP ASSISTANT
+Runs on startup:
+- Verifies connections
+- Confirms inputs
+- Detects missing components
+
+Provides:
+- Clear status indicators
+- Recommendations before use
+
+***CONNECTION STATUS INDICATOR
+Displays:
+- X32 connection (Green/Red)
+- Audio input status
+- AI/LLM availability
+
+Must update in real time.
+
+If connection fails:
+- Show warning
+- Continue operating where possible
+
+PERFORMANCE REQUIREMENTS
+
+- Audio analysis must run in real time (≤ 50 ms per cycle)
+- AI (LLM) must NOT run every loop
+  - Only trigger on new or changed issues
+- System must remain responsive while running other software (e.g., ProPresenter)
