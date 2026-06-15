@@ -149,22 +149,7 @@
   .metrics { font-size: 14px; color: var(--muted); margin-top: 6px; }
   #warnings { color: var(--yellow); font-size: 15px; margin-top: 12px; }
 
-  /* ---- X32 Network panel ---- */
-  .net-fields { display: flex; gap: 8px; margin-bottom: 10px; }
-  .net-fields input {
-    background: #1b2130; color: var(--text);
-    border: 1px solid var(--panel-edge); border-radius: 8px;
-    padding: 10px 12px; font-size: 16px;
-  }
-  #x32-ip { flex: 2; min-width: 0; }
-  #x32-port { flex: 1; min-width: 0; }
-  .net-actions { display: flex; gap: 8px; margin-bottom: 12px; }
-  .net-actions button {
-    flex: 1; background: var(--accent); color: #fff; border: none;
-    border-radius: 8px; padding: 10px; cursor: pointer; font-size: 16px;
-  }
-  #x32-disconnect-btn { background: #2a3342; }
-  .net-actions button:disabled { opacity: 0.5; cursor: default; }
+  /* ---- Status label (shared by the Settings modal: test / connection) ---- */
   .net-status {
     font-size: 16px; padding: 10px 12px; border-radius: 8px;
     background: #1b2130; border-left: 6px solid var(--muted);
@@ -173,12 +158,11 @@
   .net-status.ok { border-left-color: var(--green); }
   .net-status.bad { border-left-color: var(--red); color: var(--yellow); }
 
-  /* ---- Network Settings window (gear icon + modal) ---- */
-  .panel-head { display: flex; align-items: center; justify-content: space-between; }
+  /* ---- Settings window (header gear icon + modal) ---- */
   .gear-btn {
     background: #2a3342; color: var(--text); border: 1px solid var(--panel-edge);
     border-radius: 8px; padding: 4px 10px; font-size: 18px; cursor: pointer;
-    line-height: 1;
+    line-height: 1; margin-left: 8px;
   }
   .gear-btn:hover { background: #333d4f; }
   .modal-overlay {
@@ -189,9 +173,19 @@
   .modal {
     background: var(--panel); border: 1px solid var(--panel-edge);
     border-radius: 12px; padding: 22px; width: min(440px, 92vw);
+    max-height: 90vh; overflow-y: auto;
     box-shadow: 0 12px 40px rgba(0,0,0,0.5);
   }
   .modal h2 { margin: 0 0 16px; }
+  .modal h3.modal-section {
+    margin: 22px 0 12px; padding-top: 16px; font-size: 15px;
+    border-top: 1px solid var(--panel-edge); color: var(--muted);
+  }
+  .modal h3.modal-section:first-of-type { margin-top: 4px; border-top: none; padding-top: 0; }
+  .modal-wide-btn {
+    width: 100%; background: var(--accent); color: #fff; border: none;
+    border-radius: 8px; padding: 10px; cursor: pointer; font-size: 15px;
+  }
   .modal .field { margin-bottom: 12px; }
   .modal .field label {
     display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px;
@@ -206,9 +200,12 @@
     flex: 1; border: none; border-radius: 8px; padding: 10px; cursor: pointer;
     font-size: 15px; color: #fff;
   }
+  .modal-actions button:disabled { opacity: 0.5; cursor: default; }
   #net-save-btn { background: var(--accent); }
   #net-test-btn { background: #2a7d46; }
   #net-close-btn { background: #2a3342; }
+  #x32-connect-btn { background: var(--accent); }
+  #x32-disconnect-btn { background: #2a3342; }
 </style>
 </head>
 <body>
@@ -219,6 +216,8 @@
       <div class="indicator">Audio Input <span id="audio-dot" class="dot"></span></div>
       <div class="indicator">AI <span id="ai-dot" class="dot"></span></div>
       <div class="indicator">Link <span id="link-dot" class="dot"></span></div>
+      <button id="net-settings-btn" class="gear-btn" type="button"
+              title="Settings" aria-label="Settings">⚙</button>
     </div>
   </header>
 
@@ -244,29 +243,12 @@
 
     <!-- ===== Controls + Prompt ===== -->
     <div>
-      <section class="panel" id="network-panel" style="margin-bottom:20px;">
-        <div class="panel-head">
-          <h2>X32 Network</h2>
-          <button id="net-settings-btn" class="gear-btn" type="button"
-                  title="Network Settings" aria-label="Network Settings">⚙</button>
-        </div>
-        <div class="net-fields">
-          <input id="x32-ip" type="text" inputmode="decimal"
-                 autocomplete="off" placeholder="192.168.0.2" />
-          <input id="x32-port" type="number" min="1" max="65535"
-                 autocomplete="off" placeholder="10023" />
-        </div>
-        <div class="net-actions">
-          <button id="x32-connect-btn" type="button">Connect</button>
-          <button id="x32-disconnect-btn" type="button">Disconnect</button>
-        </div>
-        <div id="x32-conn-status" class="net-status">Not connected</div>
-      </section>
-
-      <!-- ===== Network Settings window (opened by the gear icon) ===== -->
+      <!-- ===== Settings window (opened by the gear icon in the header) ===== -->
       <div id="net-modal" class="modal-overlay">
-        <div class="modal" role="dialog" aria-modal="true" aria-label="Network Settings">
-          <h2>Network Settings</h2>
+        <div class="modal" role="dialog" aria-modal="true" aria-label="Settings">
+          <h2>Settings</h2>
+
+          <h3 class="modal-section">X32 Network</h3>
           <div class="field">
             <label for="net-ip">IP Address</label>
             <input id="net-ip" type="text" inputmode="decimal" autocomplete="off" />
@@ -290,9 +272,25 @@
           <div class="modal-actions">
             <button id="net-save-btn" type="button">Save Settings</button>
             <button id="net-test-btn" type="button">Test Connection</button>
-            <button id="net-close-btn" type="button">Close</button>
           </div>
           <div id="net-modal-status" class="net-status">Idle</div>
+
+          <h3 class="modal-section">Connection</h3>
+          <div class="modal-actions">
+            <button id="x32-connect-btn" type="button">Connect</button>
+            <button id="x32-disconnect-btn" type="button">Disconnect</button>
+          </div>
+          <div id="x32-conn-status" class="net-status">Not connected</div>
+
+          <h3 class="modal-section">Profile</h3>
+          <button id="save-profile-btn" class="modal-wide-btn" type="button">
+            Review &amp; save profile
+          </button>
+          <div id="profile-summary" class="metrics" style="margin-top:10px;"></div>
+
+          <div class="modal-actions" style="margin-top:18px;">
+            <button id="net-close-btn" type="button">Close</button>
+          </div>
         </div>
       </div>
 
@@ -327,12 +325,6 @@
           <span id="calibrate-status" class="metrics"></span>
         </div>
         <div class="metrics" id="metrics-line"></div>
-      </section>
-
-      <section class="panel" id="profile-panel" style="margin-bottom:20px;">
-        <h2>Profile</h2>
-        <button id="save-profile-btn" type="button">Review &amp; save profile</button>
-        <div id="profile-summary" class="metrics" style="margin-top:10px;"></div>
       </section>
 
       <section class="panel" id="chat-panel">
@@ -687,9 +679,9 @@
   function refreshConnStatus() {
     fetch("/api/x32/status").then(function (r) { return r.json(); })
       .then(function (s) {
-        // Prefill the form with the server's configured defaults (once).
-        var ipEl = document.getElementById("x32-ip");
-        var portEl = document.getElementById("x32-port");
+        // Prefill the network fields with the server's saved defaults (once).
+        var ipEl = document.getElementById("net-ip");
+        var portEl = document.getElementById("net-port");
         if (ipEl && !ipEl.value && s.default_ip) ipEl.value = s.ip || s.default_ip;
         if (portEl && !portEl.value && s.default_port)
           portEl.value = s.port || s.default_port;
@@ -702,8 +694,8 @@
     var box = document.getElementById("x32-conn-status");
     box.className = "net-status";
     box.textContent = "Connecting…";
-    var ip = document.getElementById("x32-ip").value.trim();
-    var portRaw = document.getElementById("x32-port").value.trim();
+    var ip = document.getElementById("net-ip").value.trim();
+    var portRaw = document.getElementById("net-port").value.trim();
     var port = portRaw === "" ? null : parseInt(portRaw, 10);
     post("/api/x32/connect", { ip: ip || null, port: port })
       .then(function (r) { return r.json(); })
