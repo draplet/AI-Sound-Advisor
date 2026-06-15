@@ -172,6 +172,43 @@
   }
   .net-status.ok { border-left-color: var(--green); }
   .net-status.bad { border-left-color: var(--red); color: var(--yellow); }
+
+  /* ---- Network Settings window (gear icon + modal) ---- */
+  .panel-head { display: flex; align-items: center; justify-content: space-between; }
+  .gear-btn {
+    background: #2a3342; color: var(--text); border: 1px solid var(--panel-edge);
+    border-radius: 8px; padding: 4px 10px; font-size: 18px; cursor: pointer;
+    line-height: 1;
+  }
+  .gear-btn:hover { background: #333d4f; }
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: none; align-items: center; justify-content: center; z-index: 50;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--panel); border: 1px solid var(--panel-edge);
+    border-radius: 12px; padding: 22px; width: min(440px, 92vw);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  }
+  .modal h2 { margin: 0 0 16px; }
+  .modal .field { margin-bottom: 12px; }
+  .modal .field label {
+    display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px;
+  }
+  .modal .field input {
+    width: 100%; box-sizing: border-box; background: #1b2130; color: var(--text);
+    border: 1px solid var(--panel-edge); border-radius: 8px;
+    padding: 9px 11px; font-size: 15px;
+  }
+  .modal-actions { display: flex; gap: 8px; margin: 16px 0 12px; }
+  .modal-actions button {
+    flex: 1; border: none; border-radius: 8px; padding: 10px; cursor: pointer;
+    font-size: 15px; color: #fff;
+  }
+  #net-save-btn { background: var(--accent); }
+  #net-test-btn { background: #2a7d46; }
+  #net-close-btn { background: #2a3342; }
 </style>
 </head>
 <body>
@@ -208,7 +245,11 @@
     <!-- ===== Controls + Prompt ===== -->
     <div>
       <section class="panel" id="network-panel" style="margin-bottom:20px;">
-        <h2>X32 Network</h2>
+        <div class="panel-head">
+          <h2>X32 Network</h2>
+          <button id="net-settings-btn" class="gear-btn" type="button"
+                  title="Network Settings" aria-label="Network Settings">⚙</button>
+        </div>
         <div class="net-fields">
           <input id="x32-ip" type="text" inputmode="decimal"
                  autocomplete="off" placeholder="192.168.0.2" />
@@ -221,6 +262,39 @@
         </div>
         <div id="x32-conn-status" class="net-status">Not connected</div>
       </section>
+
+      <!-- ===== Network Settings window (opened by the gear icon) ===== -->
+      <div id="net-modal" class="modal-overlay">
+        <div class="modal" role="dialog" aria-modal="true" aria-label="Network Settings">
+          <h2>Network Settings</h2>
+          <div class="field">
+            <label for="net-ip">IP Address</label>
+            <input id="net-ip" type="text" inputmode="decimal" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="net-subnet">Subnet Mask</label>
+            <input id="net-subnet" type="text" inputmode="decimal" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="net-gateway">Gateway</label>
+            <input id="net-gateway" type="text" inputmode="decimal" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="net-port">UDP Port</label>
+            <input id="net-port" type="number" min="1" max="65535" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="net-timeout">Timeout (ms)</label>
+            <input id="net-timeout" type="number" min="1" autocomplete="off" />
+          </div>
+          <div class="modal-actions">
+            <button id="net-save-btn" type="button">Save Settings</button>
+            <button id="net-test-btn" type="button">Test Connection</button>
+            <button id="net-close-btn" type="button">Close</button>
+          </div>
+          <div id="net-modal-status" class="net-status">Idle</div>
+        </div>
+      </div>
 
       <section class="panel" id="controls-panel" style="margin-bottom:20px;">
         <h2>Controls</h2>
@@ -650,6 +724,76 @@
   refreshConnStatus();
   // Poll the connection status so a dropped /xremote keepalive is reflected.
   setInterval(refreshConnStatus, 3000);
+
+  // ---- Network Settings window (gear icon: load / save / test) ----
+  var netModal = document.getElementById("net-modal");
+
+  function setNetModalStatus(text, kind) {
+    var box = document.getElementById("net-modal-status");
+    if (!box) return;
+    box.textContent = text;
+    box.className = "net-status " + (kind || "");
+  }
+
+  function fillNetForm(s) {
+    document.getElementById("net-ip").value = s.ip || "";
+    document.getElementById("net-subnet").value = s.subnet || "";
+    document.getElementById("net-gateway").value = s.gateway || "";
+    document.getElementById("net-port").value = s.port || "";
+    document.getElementById("net-timeout").value = s.timeout_ms || "";
+  }
+
+  function readNetForm() {
+    return {
+      ip: document.getElementById("net-ip").value.trim(),
+      subnet: document.getElementById("net-subnet").value.trim(),
+      gateway: document.getElementById("net-gateway").value.trim(),
+      port: parseInt(document.getElementById("net-port").value, 10),
+      timeout_ms: parseInt(document.getElementById("net-timeout").value, 10)
+    };
+  }
+
+  function openNetModal() {
+    setNetModalStatus("Idle", "");
+    fetch("/api/network/settings").then(function (r) { return r.json(); })
+      .then(fillNetForm).catch(function () {});
+    netModal.classList.add("open");
+  }
+  function closeNetModal() { netModal.classList.remove("open"); }
+
+  document.getElementById("net-settings-btn")
+    .addEventListener("click", openNetModal);
+  document.getElementById("net-close-btn")
+    .addEventListener("click", closeNetModal);
+  netModal.addEventListener("click", function (e) {
+    if (e.target === netModal) closeNetModal();   // click backdrop to dismiss
+  });
+
+  document.getElementById("net-save-btn").addEventListener("click", function () {
+    setNetModalStatus("Saving…", "");
+    post("/api/network/settings", readNetForm())
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        if (res.settings) fillNetForm(res.settings);
+        setNetModalStatus(res.message || "Saved.", res.ok ? "ok" : "bad");
+        refreshConnStatus();   // saved IP/port become the Connect-form defaults
+      })
+      .catch(function () { setNetModalStatus("Could not save settings.", "bad"); });
+  });
+
+  document.getElementById("net-test-btn").addEventListener("click", function () {
+    setNetModalStatus("Testing…", "");
+    var f = readNetForm();
+    post("/api/network/test", { ip: f.ip || null, port: f.port || null })
+      .then(function (r) { return r.json(); })
+      .then(function (s) {
+        setNetModalStatus(
+          s.status_label || (s.connected ? "Connected" : "No response"),
+          s.connected ? "ok" : "bad"
+        );
+      })
+      .catch(function () { setNetModalStatus("Test failed.", "bad"); });
+  });
 
   // ---- Real-time updates: WebSocket primary, HTTP polling fallback ----
   var pollTimer = null;

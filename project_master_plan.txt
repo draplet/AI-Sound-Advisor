@@ -560,3 +560,49 @@ Please modify the codebase according to these exact specifications:
    - When the master connection is active, establish a background thread that sends `/xremote` every 9 seconds to continuously subscribe to console updates. Handle connection drops gracefully.
 
 Please output the clean, modular Python UI code implementing this workflow. Use 'python-osc' if needed for clean parsing. update the master file with these changes in simple english.
+
+***NETWORK SETTINGS WINDOW — HOW IT WORKS (in simple English)
+
+The dashboard now remembers your mixer's network settings between runs and lets
+you edit them from a settings window.
+
+Saving settings to a file (config.json):
+- The system keeps your settings in a small file called "config.json".
+- The first time the app runs, that file does not exist yet, so the system
+  creates it automatically and fills it with the factory settings a brand-new
+  Behringer X32 ships with:
+    * IP Address: 192.168.1.128
+    * Subnet Mask: 255.255.255.0
+    * Gateway: 192.168.1.1
+    * UDP Port: 10023
+    * Timeout: 1500 milliseconds
+- If that file ever gets damaged or unreadable, the system does NOT crash. It
+  quietly falls back to those same factory settings and leaves the broken file
+  alone so you can fix it by hand if you want.
+
+The Settings window (the gear icon):
+- On the "X32 Network" panel there is a small gear (⚙) button. Clicking it opens
+  a "Network Settings" window.
+- The window has a box for each setting: IP Address, Subnet Mask, Gateway, UDP
+  Port and Timeout. They open already filled in with whatever is saved.
+- "Save Settings" writes your changes permanently to config.json. After you
+  save, the new IP/port are what the main Connect button will use by default.
+
+Test Connection:
+- Inside the same window there is a "Test Connection" button. Clicking it sends
+  a single "/info" message to the IP and port shown and waits for the mixer to
+  answer.
+- If the mixer answers, the window shows its model and firmware, e.g.
+  "Connected to: X32 Firmware 4.06". If it does not answer, it shows a friendly
+  warning instead. Testing never touches the live connection — it is only a
+  quick "can I reach this mixer?" check, so it does not start the keepalive.
+
+Where this lives in the code:
+- src/network_config.py     -> the config.json storage (factory defaults, load,
+  save, and the failsafe fallback).
+- src/x32_connection.py     -> the one-shot test() probe (sends /info, reads the
+  reply, never disturbs the master connection).
+- src/web_server.py         -> three endpoints the window talks to:
+  GET/POST /api/network/settings (read + save) and POST /api/network/test.
+- src/templates/index.html  -> the gear icon and the Network Settings window
+  (the five input boxes, Save / Test buttons and the status label).

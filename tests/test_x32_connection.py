@@ -225,3 +225,64 @@ def test_reconnect_tears_down_previous_channel():
         assert mgr.status().ip == "192.168.0.3"
     finally:
         mgr.disconnect()
+
+
+# ===========================================================================
+# test(): one-shot /info probe (Settings window "Test Connection")
+# ===========================================================================
+
+def test_test_returns_model_and_firmware_on_success():
+    channel = FakeChannel(X32_INFO)
+    mgr = X32ConnectionManager(channel_factory=lambda ip, port: channel)
+    state = mgr.test("192.168.1.128", 10023)
+    assert state.connected is True
+    assert state.status_label == "Connected to: X32 Firmware 4.06"
+    assert state.info.console_model == "X32"
+    # A one-shot probe must close the throwaway channel and NOT keep it sending.
+    assert channel.closed is True
+    assert "/xremote" not in channel.sends
+
+
+def test_test_failure_returns_warning_not_exception():
+    channel = FakeChannel(X32_INFO, fail_query=True)
+    mgr = X32ConnectionManager(channel_factory=lambda ip, port: channel)
+    state = mgr.test("10.0.0.9", 10023)
+    assert state.connected is False
+    assert state.warning is not None
+    assert "10.0.0.9" in state.status_label
+    assert channel.closed is True
+
+
+def test_test_does_not_disturb_live_master_connection():
+    live = FakeChannel(X32_INFO)
+    probe = FakeChannel(X32_INFO)
+    channels = iter([live, probe])
+    mgr = X32ConnectionManager(channel_factory=lambda ip, port: next(channels),
+                               keepalive_interval=0.05)
+    mgr.connect("192.168.0.2", 10023)
+    try:
+        before = mgr.status()
+        mgr.test("192.168.0.99", 10023)        # probe a different mixer
+        after = mgr.status()
+        # The live connection snapshot is unchanged by the probe.
+        assert after.connected is True
+        assert after.ip == before.ip == "192.168.0.2"
+        assert live.closed is False             # live channel still open
+        assert probe.closed is True             # probe channel closed
+    finally:
+        mgr.disconnect()
+
+
+def test_test_uses_explicit_timeout():
+    captured = {}
+
+    class TimeoutCaptureChannel(FakeChannel):
+        def query(self, address, timeout):
+            captured["timeout"] = timeout
+            return super().query(address, timeout)
+
+    channel = TimeoutCaptureChannel(X32_INFO)
+    mgr = X32ConnectionManager(channel_factory=lambda ip, port: channel,
+                               info_timeout=1.0)
+    mgr.test("192.168.1.128", 10023, timeout=1.5)
+    assert captured["timeout"] == 1.5

@@ -190,6 +190,14 @@ class ConnectionState(BaseModel):
     warning: Optional[str] = None
 
 
+def _failed_state(ip: str, port: int, message: str) -> ConnectionState:
+    """Build a disconnected snapshot carrying a warning for the UI."""
+    return ConnectionState(
+        connected=False, ip=ip, port=port,
+        status_label=message, warning=message,
+    )
+
+
 # ===========================================================================
 # Connection manager
 # ===========================================================================
@@ -261,6 +269,43 @@ class X32ConnectionManager:
             )
             self._start_keepalive_locked()
         return self._state
+
+    def test(
+        self, ip: str, port: int = X32_OSC_PORT, timeout: Optional[float] = None
+    ) -> ConnectionState:
+        """One-shot ``/info`` probe for the Settings window's "Test Connection".
+
+        Opens a throwaway channel, sends ``/info``, parses the reply into a
+        status label and closes the channel again. It does NOT start the
+        ``/xremote`` keepalive and does NOT touch the live master connection or
+        its stored state — it is purely a "can I reach this mixer?" check.
+        Never raises: failures come back as a disconnected snapshot + warning.
+        """
+        t = self._info_timeout if timeout is None else timeout
+        try:
+            channel = self._channel_factory(ip, port)
+        except Exception as exc:  # noqa: BLE001 — failsafe
+            return _failed_state(ip, port, f"Could not open OSC channel: {exc}")
+
+        try:
+            reply = channel.query("/info", t)
+        except Exception as exc:  # noqa: BLE001 — failsafe (timeout / network)
+            return _failed_state(
+                ip, port,
+                f"No response from {ip}:{port}. Check the network connection. "
+                f"({type(exc).__name__})",
+            )
+        finally:
+            try:
+                channel.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+        info = parse_info_reply(reply)
+        return ConnectionState(
+            connected=True, ip=ip, port=port,
+            status_label=info.status_label, info=info, warning=None,
+        )
 
     def disconnect(self) -> ConnectionState:
         """Stop the keepalive thread, close the channel, go idle. Idempotent."""
@@ -343,8 +388,5 @@ class X32ConnectionManager:
 
     def _set_failed(self, ip: str, port: int, message: str) -> ConnectionState:
         with self._lock:
-            self._state = ConnectionState(
-                connected=False, ip=ip, port=port,
-                status_label=message, warning=message,
-            )
+            self._state = _failed_state(ip, port, message)
             return self._state

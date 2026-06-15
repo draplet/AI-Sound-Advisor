@@ -16,6 +16,9 @@ Then open http://127.0.0.1:8000
 """
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
 import numpy as np
 import uvicorn
 
@@ -28,6 +31,7 @@ from src.profile_store import ContextProfileAgent
 from src.recording_analysis import RecordingAnalysisEngine
 from src.suggestion import SuggestionGenerator
 from src.system_loop import AudioSource, SystemLoopOrchestrator
+from src.network_config import NetworkConfigStore
 from src.web_server import create_app
 from src.x32_connection import OscChannel, X32ConnectionManager
 
@@ -157,11 +161,17 @@ def build_demo_app():
     x32_connection = X32ConnectionManager(
         channel_factory=lambda ip, port: DemoX32Channel()
     )
+    # Network Settings window wired to a throwaway temp config.json so the demo
+    # can Save / Test settings without writing into the project directory.
+    network_store = NetworkConfigStore(
+        Path(tempfile.gettempdir()) / "sound_advisor_demo_config.json"
+    )
     return create_app(
         orchestrator=orchestrator,
         profile_agent=profile_agent,
         interaction_agent=interaction_agent,
         x32_connection=x32_connection,
+        network_store=network_store,
     )
 
 

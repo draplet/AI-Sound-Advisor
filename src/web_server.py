@@ -47,6 +47,7 @@ from src.detection import Issue, IssueType, Priority, confidence_level
 from src.event_log import SessionLogger
 from src.interaction import IGNORE_DEFAULT_MS, UserInteractionAgent
 from src.mixer_state import X32_OSC_PORT
+from src.network_config import NetworkConfigStore, NetworkSettings
 from src.profile_store import ContextProfileAgent
 from src.state_manager import LoudnessMode, Scene
 from src.suggestion import PRIORITY_ICONS
@@ -214,6 +215,27 @@ class ConnectRequest(BaseModel):
     port: Optional[int] = None
 
 
+class NetworkSettingsRequest(BaseModel):
+    """Editable network settings from the Settings window (spec NETWORKING INTERFACE)."""
+
+    ip: str
+    subnet: str
+    gateway: str
+    port: int = Field(ge=1, le=65535)
+    timeout_ms: int = Field(ge=1)
+
+
+class TestConnectionRequest(BaseModel):
+    """One-shot "Test Connection" probe target.
+
+    All fields optional so the Settings window can test the values currently
+    saved on disk without re-sending them.
+    """
+
+    ip: Optional[str] = None
+    port: Optional[int] = None
+
+
 def _issue_from(req: "IssueActionRequest") -> Issue:
     """Rebuild a minimal Issue for an Agent 7 action.
 
@@ -349,6 +371,7 @@ def create_app(
     x32_connection: Optional[X32ConnectionManager] = None,
     default_x32_ip: str = DEFAULT_X32_IP,
     default_x32_port: int = X32_OSC_PORT,
+    network_store: Optional[NetworkConfigStore] = None,
 ) -> FastAPI:
     """Build the dashboard FastAPI app around a wired orchestrator."""
     app = FastAPI(title="AI Sound Advisor")
@@ -369,6 +392,9 @@ def create_app(
     app.state.x32_connection = x32_connection or X32ConnectionManager()
     app.state.default_x32_ip = default_x32_ip
     app.state.default_x32_port = default_x32_port
+    #: Persistent X32 network settings (spec NETWORKING INTERFACE). When present,
+    #: its saved IP/port become the defaults the Connect form prefills.
+    app.state.network_store = network_store
 
     def _log_action(action: str, channel: Optional[str] = None,
                     detail: Optional[str] = None) -> None:
@@ -593,6 +619,17 @@ def create_app(
     # X32 master connection (spec: connect workflow + status indicator)
     # ------------------------------------------------------------------
 
+    def _default_target() -> Tuple[str, int]:
+        """The IP/port the Connect form prefills: saved settings if any, else config."""
+        store = app.state.network_store
+        if store is not None:
+            try:
+                s = store.settings
+                return s.ip, s.port
+            except Exception:  # noqa: BLE001 — failsafe
+                pass
+        return app.state.default_x32_ip, app.state.default_x32_port
+
     @app.get("/api/x32/status")
     def x32_status() -> JSONResponse:
         """Current connection snapshot, plus the default IP/Port for the form."""
@@ -601,15 +638,17 @@ def create_app(
             payload = state.model_dump(mode="json")
         except Exception:  # noqa: BLE001 — failsafe
             payload = {"connected": False, "status_label": "Not connected"}
-        payload["default_ip"] = app.state.default_x32_ip
-        payload["default_port"] = app.state.default_x32_port
+        default_ip, default_port = _default_target()
+        payload["default_ip"] = default_ip
+        payload["default_port"] = default_port
         return JSONResponse(payload)
 
     @app.post("/api/x32/connect")
     def x32_connect(req: ConnectRequest) -> JSONResponse:
         """Send /info to the X32, show its name/firmware, start /xremote keepalive."""
-        ip = (req.ip or "").strip() or app.state.default_x32_ip
-        port = req.port or app.state.default_x32_port
+        default_ip, default_port = _default_target()
+        ip = (req.ip or "").strip() or default_ip
+        port = req.port or default_port
         try:
             state = app.state.x32_connection.connect(ip, port)
             _log_action("x32_connect", detail=f"{ip}:{port}")
@@ -631,6 +670,76 @@ def create_app(
         except Exception:  # noqa: BLE001 — failsafe
             return JSONResponse(
                 {"connected": False, "status_label": "Not connected"},
+                status_code=200,
+            )
+
+    # ------------------------------------------------------------------
+    # Network settings (spec NETWORKING INTERFACE: persistent config.json)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/network/settings")
+    def network_settings_get() -> JSONResponse:
+        """Return the saved X32 network settings (factory defaults if unset)."""
+        store = app.state.network_store
+        try:
+            settings = store.load() if store is not None else NetworkSettings()
+            return JSONResponse(settings.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse(NetworkSettings().model_dump(mode="json"))
+
+    @app.post("/api/network/settings")
+    def network_settings_save(req: NetworkSettingsRequest) -> JSONResponse:
+        """Persist edited network settings to config.json (Save Settings button)."""
+        store = app.state.network_store
+        settings = NetworkSettings(**req.model_dump())
+        if store is None:
+            return JSONResponse(
+                {"ok": False,
+                 "message": "No settings storage configured.",
+                 "settings": settings.model_dump(mode="json")},
+                status_code=200,
+            )
+        try:
+            saved = store.save(settings)
+            _log_action("network_settings_save", detail=f"{saved.ip}:{saved.port}")
+            return JSONResponse({
+                "ok": True,
+                "message": "Network settings saved.",
+                "settings": saved.model_dump(mode="json"),
+            })
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse(
+                {"ok": False, "message": "Could not save settings.",
+                 "settings": settings.model_dump(mode="json")},
+                status_code=200,
+            )
+
+    @app.post("/api/network/test")
+    def network_test(req: TestConnectionRequest) -> JSONResponse:
+        """One-shot /info probe of the configured (or supplied) IP/Port.
+
+        Does not start or disturb the master connection — it just reports whether
+        the mixer answers and, if so, its model/firmware (spec: Test Connection).
+        """
+        store = app.state.network_store
+        settings = None
+        if store is not None:
+            try:
+                settings = store.settings
+            except Exception:  # noqa: BLE001 — failsafe
+                settings = None
+        default_ip, default_port = _default_target()
+        ip = (req.ip or "").strip() or (settings.ip if settings else default_ip)
+        port = req.port or (settings.port if settings else default_port)
+        timeout = settings.timeout_s if settings else None
+        try:
+            state = app.state.x32_connection.test(ip, port, timeout)
+            _log_action("network_test", detail=f"{ip}:{port}")
+            return JSONResponse(state.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — failsafe (manager.test already never raises)
+            return JSONResponse(
+                {"connected": False,
+                 "status_label": f"No response from {ip}:{port}."},
                 status_code=200,
             )
 
@@ -699,6 +808,13 @@ def build_default_app(config: Optional[ServerConfig] = None) -> FastAPI:
 
     cfg = config or ServerConfig.from_env()
 
+    # Persistent network settings (spec NETWORKING INTERFACE). Loading creates
+    # config.json from the X32 factory defaults on first run. These saved values
+    # drive the master connection (Connect button / Test / Settings window); the
+    # background mixer poller stays on the env-driven ServerConfig.
+    network_store = NetworkConfigStore()
+    net = network_store.load()
+
     profile_agent = ContextProfileAgent(cfg.profile_dir)
     # Local Mistral 7B (Ollama/LM Studio) when configured via env, else None
     # -> SuggestionGenerator falls back to basic alerts. Failsafe either way.
@@ -746,7 +862,7 @@ def build_default_app(config: Optional[ServerConfig] = None) -> FastAPI:
     # channel on demand, honouring the configured reply timeout.
     x32_connection = X32ConnectionManager(
         channel_factory=lambda ip, port: UdpOscChannel(ip, port),
-        info_timeout=cfg.osc_timeout,
+        info_timeout=net.timeout_s,
     )
 
     return create_app(
@@ -757,4 +873,5 @@ def build_default_app(config: Optional[ServerConfig] = None) -> FastAPI:
         x32_connection=x32_connection,
         default_x32_ip=cfg.x32_ip,
         default_x32_port=cfg.x32_port,
+        network_store=network_store,
     )
