@@ -29,6 +29,7 @@ from src.recording_analysis import RecordingAnalysisEngine
 from src.suggestion import SuggestionGenerator
 from src.system_loop import AudioSource, SystemLoopOrchestrator
 from src.web_server import create_app
+from src.x32_connection import OscChannel, X32ConnectionManager
 
 HOST = "127.0.0.1"
 PORT = 8000
@@ -48,6 +49,26 @@ class DemoX32Transport(X32OscTransport):
         if "/headamp/" in address:
             return 0.4
         return 0
+
+
+class DemoX32Channel(OscChannel):
+    """A simulated X32 for the Connect panel — no network, no hardware.
+
+    Answers an ``/info`` query the way a real X32 would (server/name/model/
+    firmware) so the demo shows "Connected to: X32 Firmware 4.06", and quietly
+    accepts the ``/xremote`` keepalive sends without touching the network.
+    """
+
+    def query(self, address: str, timeout: float):
+        if address == "/info":
+            return ["V2.07", "osc-server-demo", "X32", "4.06"]
+        return []
+
+    def send(self, address: str) -> None:
+        pass  # /xremote keepalive — nothing to do in the demo
+
+    def close(self) -> None:
+        pass
 
 
 class DemoAudioEngine:
@@ -131,10 +152,16 @@ def build_demo_app():
         recording_source=DemoRecordingSource(),
         recording_analysis_engine=RecordingAnalysisEngine.default(),
     )
+    # Connect panel wired to a simulated X32 so the /info + /xremote workflow
+    # works in the demo without real hardware (mirrors DemoX32Transport).
+    x32_connection = X32ConnectionManager(
+        channel_factory=lambda ip, port: DemoX32Channel()
+    )
     return create_app(
         orchestrator=orchestrator,
         profile_agent=profile_agent,
         interaction_agent=interaction_agent,
+        x32_connection=x32_connection,
     )
 
 

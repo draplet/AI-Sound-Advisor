@@ -51,6 +51,7 @@ from src.profile_store import ContextProfileAgent
 from src.state_manager import LoudnessMode, Scene
 from src.suggestion import PRIORITY_ICONS
 from src.system_loop import SystemLoopOrchestrator
+from src.x32_connection import X32ConnectionManager
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -202,6 +203,17 @@ class ChatRequest(BaseModel):
     history: List[ChatTurn] = Field(default_factory=list)
 
 
+class ConnectRequest(BaseModel):
+    """Connect-to-X32 request: which mixer to reach over OSC.
+
+    Both fields are optional so the dashboard's "Connect" button can fall back
+    to the server's configured defaults when the operator leaves them blank.
+    """
+
+    ip: Optional[str] = None
+    port: Optional[int] = None
+
+
 def _issue_from(req: "IssueActionRequest") -> Issue:
     """Rebuild a minimal Issue for an Agent 7 action.
 
@@ -334,6 +346,9 @@ def create_app(
     ws_interval_ms: int = DEFAULT_WS_INTERVAL_MS,
     template_path: Optional[Path] = None,
     event_logger: Optional[SessionLogger] = None,
+    x32_connection: Optional[X32ConnectionManager] = None,
+    default_x32_ip: str = DEFAULT_X32_IP,
+    default_x32_port: int = X32_OSC_PORT,
 ) -> FastAPI:
     """Build the dashboard FastAPI app around a wired orchestrator."""
     app = FastAPI(title="AI Sound Advisor")
@@ -349,6 +364,11 @@ def create_app(
     app.state.event_logger = event_logger
     #: Focus Mode: when True, only the highest-priority issue is shown.
     app.state.focus_mode = False
+    #: Master X32 connection (spec CONNECTION STATUS INDICATOR / connect workflow).
+    #: Defaults to a real UDP manager so the Connect button works out of the box.
+    app.state.x32_connection = x32_connection or X32ConnectionManager()
+    app.state.default_x32_ip = default_x32_ip
+    app.state.default_x32_port = default_x32_port
 
     def _log_action(action: str, channel: Optional[str] = None,
                     detail: Optional[str] = None) -> None:
@@ -570,6 +590,51 @@ def create_app(
             )
 
     # ------------------------------------------------------------------
+    # X32 master connection (spec: connect workflow + status indicator)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/x32/status")
+    def x32_status() -> JSONResponse:
+        """Current connection snapshot, plus the default IP/Port for the form."""
+        try:
+            state = app.state.x32_connection.status()
+            payload = state.model_dump(mode="json")
+        except Exception:  # noqa: BLE001 — failsafe
+            payload = {"connected": False, "status_label": "Not connected"}
+        payload["default_ip"] = app.state.default_x32_ip
+        payload["default_port"] = app.state.default_x32_port
+        return JSONResponse(payload)
+
+    @app.post("/api/x32/connect")
+    def x32_connect(req: ConnectRequest) -> JSONResponse:
+        """Send /info to the X32, show its name/firmware, start /xremote keepalive."""
+        ip = (req.ip or "").strip() or app.state.default_x32_ip
+        port = req.port or app.state.default_x32_port
+        try:
+            state = app.state.x32_connection.connect(ip, port)
+            _log_action("x32_connect", detail=f"{ip}:{port}")
+            return JSONResponse(state.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — failsafe (manager already never raises)
+            return JSONResponse(
+                {"connected": False,
+                 "status_label": "Could not connect to the X32."},
+                status_code=200,
+            )
+
+    @app.post("/api/x32/disconnect")
+    def x32_disconnect() -> JSONResponse:
+        """Stop the keepalive and close the OSC channel."""
+        try:
+            state = app.state.x32_connection.disconnect()
+            _log_action("x32_disconnect")
+            return JSONResponse(state.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse(
+                {"connected": False, "status_label": "Not connected"},
+                status_code=200,
+            )
+
+    # ------------------------------------------------------------------
     # Logging system review (spec: post-service review)
     # ------------------------------------------------------------------
 
@@ -630,6 +695,7 @@ def build_default_app(config: Optional[ServerConfig] = None) -> FastAPI:
     from src.recording_analysis import RecordingAnalysisEngine
     from src.suggestion import SuggestionGenerator
     from src.system_loop import SoundDeviceAudioSource
+    from src.x32_connection import UdpOscChannel
 
     cfg = config or ServerConfig.from_env()
 
@@ -676,9 +742,19 @@ def build_default_app(config: Optional[ServerConfig] = None) -> FastAPI:
         recording_source=recording_source,
         recording_analysis_engine=recording_engine,
     )
+    # Master connection manager for the Connect button: builds a real UDP/OSC
+    # channel on demand, honouring the configured reply timeout.
+    x32_connection = X32ConnectionManager(
+        channel_factory=lambda ip, port: UdpOscChannel(ip, port),
+        info_timeout=cfg.osc_timeout,
+    )
+
     return create_app(
         orchestrator=orchestrator,
         profile_agent=profile_agent,
         interaction_agent=interaction_agent,
         event_logger=event_logger,
+        x32_connection=x32_connection,
+        default_x32_ip=cfg.x32_ip,
+        default_x32_port=cfg.x32_port,
     )

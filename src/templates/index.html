@@ -148,6 +148,30 @@
   }
   .metrics { font-size: 14px; color: var(--muted); margin-top: 6px; }
   #warnings { color: var(--yellow); font-size: 15px; margin-top: 12px; }
+
+  /* ---- X32 Network panel ---- */
+  .net-fields { display: flex; gap: 8px; margin-bottom: 10px; }
+  .net-fields input {
+    background: #1b2130; color: var(--text);
+    border: 1px solid var(--panel-edge); border-radius: 8px;
+    padding: 10px 12px; font-size: 16px;
+  }
+  #x32-ip { flex: 2; min-width: 0; }
+  #x32-port { flex: 1; min-width: 0; }
+  .net-actions { display: flex; gap: 8px; margin-bottom: 12px; }
+  .net-actions button {
+    flex: 1; background: var(--accent); color: #fff; border: none;
+    border-radius: 8px; padding: 10px; cursor: pointer; font-size: 16px;
+  }
+  #x32-disconnect-btn { background: #2a3342; }
+  .net-actions button:disabled { opacity: 0.5; cursor: default; }
+  .net-status {
+    font-size: 16px; padding: 10px 12px; border-radius: 8px;
+    background: #1b2130; border-left: 6px solid var(--muted);
+    color: var(--text); white-space: pre-wrap;
+  }
+  .net-status.ok { border-left-color: var(--green); }
+  .net-status.bad { border-left-color: var(--red); color: var(--yellow); }
 </style>
 </head>
 <body>
@@ -183,6 +207,21 @@
 
     <!-- ===== Controls + Prompt ===== -->
     <div>
+      <section class="panel" id="network-panel" style="margin-bottom:20px;">
+        <h2>X32 Network</h2>
+        <div class="net-fields">
+          <input id="x32-ip" type="text" inputmode="decimal"
+                 autocomplete="off" placeholder="192.168.0.2" />
+          <input id="x32-port" type="number" min="1" max="65535"
+                 autocomplete="off" placeholder="10023" />
+        </div>
+        <div class="net-actions">
+          <button id="x32-connect-btn" type="button">Connect</button>
+          <button id="x32-disconnect-btn" type="button">Disconnect</button>
+        </div>
+        <div id="x32-conn-status" class="net-status">Not connected</div>
+      </section>
+
       <section class="panel" id="controls-panel" style="margin-bottom:20px;">
         <h2>Controls</h2>
         <div class="control-group">
@@ -560,6 +599,57 @@
         renderChatLog();
       });
   });
+
+  // ---- X32 master connection (Connect / status label / Disconnect) ----
+  function renderConnState(s) {
+    var box = document.getElementById("x32-conn-status");
+    if (!box) return;
+    box.textContent = s.status_label || (s.connected ? "Connected" : "Not connected");
+    box.className = "net-status " + (s.connected ? "ok" : (s.warning ? "bad" : ""));
+    document.getElementById("x32-connect-btn").disabled = !!s.connected;
+    document.getElementById("x32-disconnect-btn").disabled = !s.connected;
+  }
+
+  function refreshConnStatus() {
+    fetch("/api/x32/status").then(function (r) { return r.json(); })
+      .then(function (s) {
+        // Prefill the form with the server's configured defaults (once).
+        var ipEl = document.getElementById("x32-ip");
+        var portEl = document.getElementById("x32-port");
+        if (ipEl && !ipEl.value && s.default_ip) ipEl.value = s.ip || s.default_ip;
+        if (portEl && !portEl.value && s.default_port)
+          portEl.value = s.port || s.default_port;
+        renderConnState(s);
+      })
+      .catch(function () {});
+  }
+
+  document.getElementById("x32-connect-btn").addEventListener("click", function () {
+    var box = document.getElementById("x32-conn-status");
+    box.className = "net-status";
+    box.textContent = "Connecting…";
+    var ip = document.getElementById("x32-ip").value.trim();
+    var portRaw = document.getElementById("x32-port").value.trim();
+    var port = portRaw === "" ? null : parseInt(portRaw, 10);
+    post("/api/x32/connect", { ip: ip || null, port: port })
+      .then(function (r) { return r.json(); })
+      .then(renderConnState)
+      .catch(function () {
+        renderConnState({ connected: false, warning: true,
+                          status_label: "Could not connect to the X32." });
+      });
+  });
+
+  document.getElementById("x32-disconnect-btn").addEventListener("click", function () {
+    post("/api/x32/disconnect", {})
+      .then(function (r) { return r.json(); })
+      .then(renderConnState)
+      .catch(function () {});
+  });
+
+  refreshConnStatus();
+  // Poll the connection status so a dropped /xremote keepalive is reflected.
+  setInterval(refreshConnStatus, 3000);
 
   // ---- Real-time updates: WebSocket primary, HTTP polling fallback ----
   var pollTimer = null;

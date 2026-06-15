@@ -486,9 +486,77 @@ If connection fails:
 - Show warning
 - Continue operating where possible
 
+***NETWORK CONNECTION / X32 CONNECT WORKFLOW
+(In simple English — how the dashboard connects to the mixer.)
+
+There is an "X32 Network" panel on the dashboard with a box for the mixer's
+IP address, a box for its port (default 10023), a Connect button and a
+Disconnect button. The IP and port boxes start filled in with the values the
+system was configured with, so usually the operator just clicks Connect.
+
+What happens when you click Connect:
+1. The system sends a small OSC message called "/info" to the IP and port you
+   typed. This is like saying "Hello, who are you?" to the mixer.
+2. The mixer answers with its details (server version, name, model and
+   firmware version). The system reads that answer and shows it in a status
+   label, for example: "Connected to: X32 Firmware 4.06".
+3. If the mixer does not answer (wrong IP, cable unplugged, mixer off), the
+   system does NOT crash. It simply shows a warning in the same label, such as
+   "No response from 192.168.0.2:10023. Check the network connection." The rest
+   of the dashboard keeps running.
+
+Staying connected (keepalive):
+- The X32 only keeps sending us its live changes for about 10 seconds at a
+  time. So while we are connected, a background helper quietly re-sends another
+  OSC message called "/xremote" every 9 seconds. This keeps the mixer streaming
+  its updates to us without a gap.
+- If that background message ever fails (the mixer drops off the network), the
+  system handles it gracefully: it stops the helper, marks the connection as
+  lost, and shows a warning in the status label. Nothing crashes.
+
+Disconnect:
+- Clicking Disconnect stops the background helper and closes the connection
+  cleanly. The status label goes back to "Not connected".
+
+Where this lives in the code:
+- src/x32_connection.py     -> the connection logic (send /info, read the
+  reply, run the /xremote keepalive, handle drops). Uses the python-osc
+  library and is fully testable without real hardware.
+- src/web_server.py         -> the buttons talk to it through three endpoints:
+  /api/x32/connect, /api/x32/disconnect and /api/x32/status.
+- src/templates/index.html  -> the "X32 Network" panel (IP/port boxes, the two
+  buttons and the status label).
+
 PERFORMANCE REQUIREMENTS
 
 - Audio analysis must run in real time (≤ 50 ms per cycle)
 - AI (LLM) must NOT run every loop
   - Only trigger on new or changed issues
 - System must remain responsive while running other software (e.g., ProPresenter)
+
+***NETWORKING INTERFACE
+I need to upgrade my main application to include a persistent, fully configurable network settings system for a Behringer X32. 
+
+Please modify the codebase according to these exact specifications:
+
+1. ARCHITECTURE & STORAGE:
+   - Create a persistent JSON storage system (`config.json`) to save network settings.
+   - If the file is missing, automatically initialize it with the factory default shipping settings of a Behringer X32:
+     * Default IP: 192.168.1.128
+     * Default Subnet: 255.255.255.0
+     * Default Gateway: 192.168.1.1
+     * Default UDP Target Port: 10023
+     * Default Local Timeout: 1500ms
+
+2. SETTINGS UI WINDOW:
+   - Create a dedicated "Network Settings" window accessed via a gear icon or button on the Main Page.
+   - The settings window must display editable input fields for: IP, Subnet, Gateway, Port, and Timeout.
+   - Include a "Save Settings" button that writes changes permanently to disk.
+
+3. CONNECTION ENGINE & TEST MECHANISM:
+   - Add a "Test Connection" button inside the Settings window.
+   - When clicked, it must send an OSC `/info` packet to the configured IP/Port. 
+   - Parse the returning OSC packet and display the console name/firmware response directly in a visual status label (e.g., "Connected to: X32 Firmware 4.06").
+   - When the master connection is active, establish a background thread that sends `/xremote` every 9 seconds to continuously subscribe to console updates. Handle connection drops gracefully.
+
+Please output the clean, modular Python UI code implementing this workflow. Use 'python-osc' if needed for clean parsing. update the master file with these changes in simple english.
