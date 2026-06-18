@@ -16,27 +16,38 @@ Then open http://127.0.0.1:8000
 """
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
+import sys
 
-import numpy as np
-import uvicorn
+print("[DEBUG] Starting imports...", file=sys.stderr)
 
-from src.audio_analysis import AudioMetrics, EnergyLevel
-from src.detection import DetectionEngine
-from src.interaction import UserInteractionAgent
-from src.mixer_state import MixerStateAgent, X32OscTransport
-from src.pacing import SuggestionPacingAgent
-from src.profile_store import ContextProfileAgent
-from src.recording_analysis import RecordingAnalysisEngine
-from src.suggestion import SuggestionGenerator
-from src.system_loop import AudioSource, SystemLoopOrchestrator
-from src.network_config import NetworkConfigStore
-from src.web_server import create_app
-from src.x32_connection import OscChannel, X32ConnectionManager
+try:
+    import numpy as np
+    import uvicorn
+    print("[DEBUG] Core imports OK", file=sys.stderr)
+
+    from src.audio_analysis import AudioMetrics, EnergyLevel
+    from src.detection import DetectionEngine
+    from src.interaction import UserInteractionAgent
+    from src.mixer_state import MixerStateAgent, X32OscTransport
+    from src.pacing import SuggestionPacingAgent
+    from src.profile_store import ContextProfileAgent
+    from src.recording_analysis import RecordingAnalysisEngine
+    from src.suggestion import SuggestionGenerator
+    from src.system_loop import AudioSource, SystemLoopOrchestrator
+    from src.network_config import NetworkConfigStore
+    from src.web_server import create_app
+    from src.x32_connection import UdpOscChannel, X32ConnectionManager
+    print("[DEBUG] All imports OK", file=sys.stderr)
+except Exception as e:
+    print(f"[ERROR] Import failed: {e}", file=sys.stderr)
+    import traceback
+    traceback.print_exc()
+    print("\nPress Enter to exit...")
+    input()
+    sys.exit(1)
 
 HOST = "127.0.0.1"
-PORT = 8000
+PORT = 8001
 SECONDS_PER_STATE = 6  # how long each simulated condition lasts
 
 
@@ -53,26 +64,6 @@ class DemoX32Transport(X32OscTransport):
         if "/headamp/" in address:
             return 0.4
         return 0
-
-
-class DemoX32Channel(OscChannel):
-    """A simulated X32 for the Connect panel — no network, no hardware.
-
-    Answers an ``/info`` query the way a real X32 would (server/name/model/
-    firmware) so the demo shows "Connected to: X32 Firmware 4.06", and quietly
-    accepts the ``/xremote`` keepalive sends without touching the network.
-    """
-
-    def query(self, address: str, timeout: float):
-        if address == "/info":
-            return ["V2.07", "osc-server-demo", "X32", "4.06"]
-        return []
-
-    def send(self, address: str) -> None:
-        pass  # /xremote keepalive — nothing to do in the demo
-
-    def close(self) -> None:
-        pass
 
 
 class DemoAudioEngine:
@@ -156,15 +147,16 @@ def build_demo_app():
         recording_source=DemoRecordingSource(),
         recording_analysis_engine=RecordingAnalysisEngine.default(),
     )
-    # Connect panel wired to a simulated X32 so the /info + /xremote workflow
-    # works in the demo without real hardware (mirrors DemoX32Transport).
+    # Connect panel + Settings "Test Connection" wired to a REAL UDP/OSC channel
+    # so /info is actually sent over the network to the configured X32. The probe
+    # only reports success on a genuine reply; a wrong IP / missing mixer / no
+    # network times out and surfaces as an error (spec: "if no return from /info
+    # display error"). The audio side stays simulated (no mic in this env).
+    network_store = NetworkConfigStore()        # real project config.json
+    net = network_store.load()                  # creates it from X32 factory defaults on first run
     x32_connection = X32ConnectionManager(
-        channel_factory=lambda ip, port: DemoX32Channel()
-    )
-    # Network Settings window wired to a throwaway temp config.json so the demo
-    # can Save / Test settings without writing into the project directory.
-    network_store = NetworkConfigStore(
-        Path(tempfile.gettempdir()) / "sound_advisor_demo_config.json"
+        channel_factory=lambda ip, port: UdpOscChannel(ip, port),
+        info_timeout=net.timeout_s,             # honour the saved Timeout setting
     )
     return create_app(
         orchestrator=orchestrator,
@@ -178,5 +170,14 @@ def build_demo_app():
 app = build_demo_app()
 
 if __name__ == "__main__":
-    print(f"AI Sound Advisor dashboard -> http://{HOST}:{PORT}")
-    uvicorn.run(app, host=HOST, port=PORT, log_level="warning")
+    try:
+        print(f"AI Sound Advisor dashboard -> http://{HOST}:{PORT}")
+        print("Press Ctrl+C to stop")
+        uvicorn.run(app, host=HOST, port=PORT, log_level="warning")
+    except Exception as e:
+        print(f"ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        print("\nPress Enter to exit...")
+        input()
+
