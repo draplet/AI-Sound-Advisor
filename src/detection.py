@@ -172,6 +172,10 @@ class Issue(BaseModel):
 
     issue: IssueType
     channel: Optional[str]
+    #: 1-based X32 channel number when the issue is tied to a specific channel
+    #: (e.g. vocal masking). None for main-mix issues. Lets the UI show an
+    #: OSC-style tag like /ch/01/"Lead Vocal".
+    channel_index: Optional[int] = None
     priority: Priority
     confidence: float
 
@@ -365,6 +369,7 @@ class VocalMaskingDetector(IssueDetector):
         return Issue(
             issue=IssueType.VOCAL_MASKING,
             channel=vocal.name,
+            channel_index=vocal.index,
             priority=priority_for(IssueType.VOCAL_MASKING, context.profile.scene),
             confidence=confidence,
         )

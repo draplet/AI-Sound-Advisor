@@ -75,6 +75,10 @@
   .suggestion.prio-low { border-left-color: var(--blue); }
   .suggestion .top { display: flex; justify-content: space-between; align-items: center; }
   .suggestion .msg { font-size: 20px; margin: 6px 0 10px; }
+  .suggestion .msg .ch-ref {
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 16px; color: #bcd3ff; margin-right: 6px; white-space: nowrap;
+  }
   .suggestion .meta { font-size: 15px; color: var(--muted); }
   .badge {
     font-size: 13px; padding: 3px 10px; border-radius: 999px;
@@ -233,7 +237,7 @@
         </button>
       </div>
       <div id="suggestions-list" class="tab-content">
-        <div class="all-clear">✅ Your mix is sounding good</div>
+        <div class="all-clear">Waiting for communication…</div>
       </div>
       <div id="broadcast-list" class="tab-content" style="display:none;">
         <div class="metrics">Not monitoring a recording feed.</div>
@@ -379,8 +383,19 @@
     if (count) count.textContent = suggestions.length ? "(" + suggestions.length + ")" : "";
 
     if (!suggestions.length) {
-      var msg = state.all_clear ? "✅ Your mix is sounding good" : "Monitoring…";
-      list.innerHTML = '<div class="all-clear">' + msg + "</div>";
+      // "Your mix is sounding good" only when a good mix is actually detected
+      // (all_clear). Otherwise show the server's status message (e.g. waiting
+      // for communication / audio lost), falling back to a neutral monitoring
+      // note when there is none.
+      var msg;
+      if (state.all_clear) {
+        msg = "✅ Your mix is sounding good";
+      } else if (state.status_message) {
+        msg = state.status_message;
+      } else {
+        msg = "Monitoring…";
+      }
+      list.innerHTML = '<div class="all-clear">' + escapeHtml(msg) + "</div>";
       return;
     }
 
@@ -407,6 +422,10 @@
       var moreActive = open && open.mode === "more" ? " active" : "";
       var howActive = open && open.mode === "tellmehow" ? " active" : "";
       var chAttr = escapeHtml(channelAttr);
+      // OSC-style channel tag (e.g. /ch/01/"Lead Vocal") leading the message.
+      var refHtml = s.channel_ref
+        ? '<span class="ch-ref">' + escapeHtml(s.channel_ref) + "</span>"
+        : "";
       return (
         '<div class="suggestion prio-' + s.priority + '">' +
           '<div class="top">' +
@@ -416,7 +435,7 @@
             "</span>" +
             '<span class="badge">Confidence: ' + label + "</span>" +
           "</div>" +
-          '<div class="msg">' + icon + " " + escapeHtml(s.message || s.issue) + "</div>" +
+          '<div class="msg">' + icon + " " + refHtml + escapeHtml(s.message || s.issue) + "</div>" +
           '<div class="actions">' +
             '<button class="act' + moreActive + '" data-act="more" data-issue="' + s.issue + '" data-channel="' + chAttr + '">More</button>' +
             '<button class="act' + howActive + '" data-act="tellmehow" data-issue="' + s.issue + '" data-channel="' + chAttr + '">Tell me how</button>' +

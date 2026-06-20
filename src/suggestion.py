@@ -88,6 +88,8 @@ class Suggestion(BaseModel):
 
     issue: IssueType
     channel: Optional[str]
+    #: 1-based X32 channel number when the issue is channel-specific (else None).
+    channel_index: Optional[int] = None
     priority: Priority
     confidence: float
     message: str
@@ -101,10 +103,28 @@ class Suggestion(BaseModel):
     def priority_icon(self) -> str:
         return PRIORITY_ICONS.get(self.priority, "🔵")
 
+    @property
+    def channel_ref(self) -> Optional[str]:
+        """OSC-style channel tag for the UI, e.g. '/ch/01/"Lead Vocal"'.
+
+        ``None`` for main-mix issues (no specific channel), so the UI can fall
+        back to a plain message.
+        """
+        if self.channel_index is None:
+            return None
+        name = self.channel or ""
+        return f'/ch/{self.channel_index:02d}/"{name}"'
+
     def render(self) -> str:
-        """Render in the spec output format: icon + message, then confidence."""
+        """Render in the spec output format: icon + message, then confidence.
+
+        Channel-specific issues lead with their OSC-style tag (spec: "Use
+        channel labels when available").
+        """
         label = self.confidence_label.value.capitalize()
-        return f"{self.priority_icon} {self.message}\nConfidence: {label}"
+        ref = self.channel_ref
+        body = f"{ref} {self.message}" if ref else self.message
+        return f"{self.priority_icon} {body}\nConfidence: {label}"
 
 
 # ===========================================================================
@@ -151,6 +171,7 @@ class SuggestionGenerator:
         return Suggestion(
             issue=issue.issue,
             channel=issue.channel,
+            channel_index=issue.channel_index,
             priority=issue.priority,
             confidence=issue.confidence,
             message=message,

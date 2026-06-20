@@ -118,11 +118,17 @@ class TestIssueModelAndPriority:
         issue = Issue(
             issue=IssueType.VOCAL_MASKING,
             channel="Lead Vocal",
+            channel_index=1,
             priority=Priority.HIGH,
             confidence=0.9,
         )
         dumped = issue.model_dump()
-        assert set(dumped.keys()) == {"issue", "channel", "priority", "confidence"}
+        # channel_index is optional (None for main-mix issues) and carries the
+        # 1-based channel number so the UI can show an OSC-style tag.
+        assert set(dumped.keys()) == {
+            "issue", "channel", "channel_index", "priority", "confidence",
+        }
+        assert dumped["channel_index"] == 1
 
     def test_issue_confidence_label_matches_score(self):
         issue = Issue(

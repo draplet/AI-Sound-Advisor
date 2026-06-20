@@ -278,6 +278,10 @@ def _build_payload(frame, cache: Dict[IssueKey, object]) -> dict:
             {
                 "issue": issue.issue.value,
                 "channel": issue.channel,
+                "channel_index": issue.channel_index,
+                # OSC-style channel tag (e.g. /ch/01/"Lead Vocal") for the UI to
+                # lead the message with; None for main-mix issues.
+                "channel_ref": cached.channel_ref if cached is not None else None,
                 "priority": issue.priority.value,
                 "confidence": issue.confidence,
                 "confidence_label": confidence_level(issue.confidence).value,

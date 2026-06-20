@@ -45,6 +45,37 @@ for /f "tokens=5" %%p in ('netstat -ano ^| findstr "127.0.0.1:8001" ^| findstr "
     taskkill /PID %%p /F >nul 2>nul
 )
 
+REM --- Make sure the local Ollama server is running (the AI panel needs it) --
+REM    Probe the Ollama API; if it is down, start "ollama serve" and wait for it.
+REM    Failsafe: if Ollama can't be started, the dashboard still runs and the AI
+REM    panel just falls back to built-in basic alerts.
+curl -s -m 2 http://localhost:11434/api/tags >nul 2>nul
+if not errorlevel 1 (
+    echo [i] Ollama server is already running.
+    goto ollama_ready
+)
+where ollama >nul 2>nul
+if errorlevel 1 (
+    echo [!] 'ollama' is not on PATH - cannot auto-start it.
+    echo     Start Ollama manually, or the AI panel will use basic alerts.
+    goto ollama_ready
+)
+echo [i] Ollama server not responding - starting it (ollama serve)...
+start "Ollama server" /min ollama serve
+
+set /a OLLAMA_TRIES=0
+:wait_ollama
+timeout /t 2 /nobreak >nul
+curl -s -m 2 http://localhost:11434/api/tags >nul 2>nul
+if not errorlevel 1 (
+    echo [i] Ollama server is up.
+    goto ollama_ready
+)
+set /a OLLAMA_TRIES+=1
+if %OLLAMA_TRIES% lss 10 goto wait_ollama
+echo [!] Ollama did not come up in time - the AI panel may fall back to basic alerts.
+:ollama_ready
+
 echo ============================================================
 echo   AI Sound Advisor - Dashboard  (Python 3.10)
 echo   Open: http://127.0.0.1:8001

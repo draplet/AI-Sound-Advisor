@@ -69,9 +69,11 @@ def make_issue(
     channel="Lead Vocal",
     priority=Priority.HIGH,
     confidence=0.9,
+    channel_index=None,
 ):
     return Issue(
-        issue=issue_type, channel=channel, priority=priority, confidence=confidence
+        issue=issue_type, channel=channel, channel_index=channel_index,
+        priority=priority, confidence=confidence,
     )
 
 
@@ -158,6 +160,26 @@ class TestLlmGeneration:
         assert suggestion.channel == "Lead Vocal"
         assert suggestion.priority == Priority.HIGH
         assert suggestion.confidence == 0.9
+
+    def test_generate_carries_channel_index_and_builds_osc_ref(self):
+        """A channel-specific issue produces an OSC-style tag, e.g.
+        /ch/01/"Lead Vocal", that the UI leads the message with."""
+        generator = SuggestionGenerator(FakeLLMClient())
+        suggestion = generator.generate(
+            make_issue(channel="Lead Vocal", channel_index=1)
+        )
+        assert suggestion.channel_index == 1
+        assert suggestion.channel_ref == '/ch/01/"Lead Vocal"'
+        assert suggestion.render().startswith('🔴 /ch/01/"Lead Vocal" ')
+
+    def test_main_mix_issue_has_no_channel_ref(self):
+        """Main-mix issues (no channel) carry no OSC tag."""
+        generator = SuggestionGenerator(FakeLLMClient())
+        suggestion = generator.generate(
+            make_issue(issue_type=IssueType.CLIPPING, channel=None)
+        )
+        assert suggestion.channel_index is None
+        assert suggestion.channel_ref is None
 
     def test_prompt_includes_channel_label_and_issue(self):
         """Spec: 'Use channel labels when available.'"""
