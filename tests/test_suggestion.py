@@ -86,15 +86,17 @@ class TestSuggestionRendering:
     def test_render_matches_spec_output_format(self):
         suggestion = Suggestion(
             issue=IssueType.VOCAL_MASKING,
-            channel="Channel 3",
+            channel="Lead Vocal",
+            channel_index=3,
             priority=Priority.HIGH,
             confidence=0.9,
-            message="Channel 3 vocals are slightly buried under music",
+            message="vocals are slightly buried under music",
             source=SuggestionSource.LLM,
         )
         rendered = suggestion.render()
+        # Each suggestion leads with "Channel ##, Label", then the message.
         assert rendered == (
-            "🔴 Channel 3 vocals are slightly buried under music\n"
+            "🔴 Channel 03, Lead Vocal — vocals are slightly buried under music\n"
             "Confidence: High"
         )
 
@@ -161,25 +163,24 @@ class TestLlmGeneration:
         assert suggestion.priority == Priority.HIGH
         assert suggestion.confidence == 0.9
 
-    def test_generate_carries_channel_index_and_builds_osc_ref(self):
-        """A channel-specific issue produces an OSC-style tag, e.g.
-        /ch/01/"Lead Vocal", that the UI leads the message with."""
+    def test_generate_carries_channel_index_and_builds_channel_tag(self):
+        """A channel-specific issue leads with 'Channel ##, Label'."""
         generator = SuggestionGenerator(FakeLLMClient())
         suggestion = generator.generate(
-            make_issue(channel="Lead Vocal", channel_index=1)
+            make_issue(channel="Lead Vocal", channel_index=3)
         )
-        assert suggestion.channel_index == 1
-        assert suggestion.channel_ref == '/ch/01/"Lead Vocal"'
-        assert suggestion.render().startswith('🔴 /ch/01/"Lead Vocal" ')
+        assert suggestion.channel_index == 3
+        assert suggestion.channel_ref == "Channel 03, Lead Vocal"
+        assert suggestion.render().startswith("🔴 Channel 03, Lead Vocal — ")
 
-    def test_main_mix_issue_has_no_channel_ref(self):
-        """Main-mix issues (no channel) carry no OSC tag."""
+    def test_main_mix_issue_tag_is_main_mix(self):
+        """Mix-wide issues (no channel) lead with 'Main Mix'."""
         generator = SuggestionGenerator(FakeLLMClient())
         suggestion = generator.generate(
             make_issue(issue_type=IssueType.CLIPPING, channel=None)
         )
         assert suggestion.channel_index is None
-        assert suggestion.channel_ref is None
+        assert suggestion.channel_ref == "Main Mix"
 
     def test_prompt_includes_channel_label_and_issue(self):
         """Spec: 'Use channel labels when available.'"""

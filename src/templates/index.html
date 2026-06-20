@@ -75,10 +75,7 @@
   .suggestion.prio-low { border-left-color: var(--blue); }
   .suggestion .top { display: flex; justify-content: space-between; align-items: center; }
   .suggestion .msg { font-size: 20px; margin: 6px 0 10px; }
-  .suggestion .msg .ch-ref {
-    font-family: Consolas, "Courier New", monospace;
-    font-size: 16px; color: #bcd3ff; margin-right: 6px; white-space: nowrap;
-  }
+  .suggestion .msg .ch-ref { font-weight: 700; color: #bcd3ff; }
   .suggestion .meta { font-size: 15px; color: var(--muted); }
   .badge {
     font-size: 13px; padding: 3px 10px; border-radius: 999px;
@@ -422,16 +419,14 @@
       var moreActive = open && open.mode === "more" ? " active" : "";
       var howActive = open && open.mode === "tellmehow" ? " active" : "";
       var chAttr = escapeHtml(channelAttr);
-      // OSC-style channel tag (e.g. /ch/01/"Lead Vocal") leading the message.
-      var refHtml = s.channel_ref
-        ? '<span class="ch-ref">' + escapeHtml(s.channel_ref) + "</span>"
-        : "";
+      // Channel tag leading every message: "Channel 03, Lead Vocal" or "Main Mix".
+      var ref = s.channel_ref || channelLabel;
+      var refHtml = '<span class="ch-ref">' + escapeHtml(ref) + " — </span>";
       return (
         '<div class="suggestion prio-' + s.priority + '">' +
           '<div class="top">' +
             '<span class="chips">' +
               '<span class="badge">' + s.priority + "</span>" +
-              '<span class="chip channel">' + escapeHtml(channelLabel) + "</span>" +
             "</span>" +
             '<span class="badge">Confidence: ' + label + "</span>" +
           "</div>" +

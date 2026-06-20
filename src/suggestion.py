@@ -104,27 +104,27 @@ class Suggestion(BaseModel):
         return PRIORITY_ICONS.get(self.priority, "🔵")
 
     @property
-    def channel_ref(self) -> Optional[str]:
-        """OSC-style channel tag for the UI, e.g. '/ch/01/"Lead Vocal"'.
+    def channel_ref(self) -> str:
+        """Human channel tag leading every suggestion: "Channel #, Label".
 
-        ``None`` for main-mix issues (no specific channel), so the UI can fall
-        back to a plain message.
-        """
-        if self.channel_index is None:
-            return None
-        name = self.channel or ""
-        return f'/ch/{self.channel_index:02d}/"{name}"'
-
-    def render(self) -> str:
-        """Render in the spec output format: icon + message, then confidence.
-
-        Channel-specific issues lead with their OSC-style tag (spec: "Use
+        - Channel-specific issue with a number  -> 'Channel 03, Lead Vocal'
+        - Channel-specific issue, number unknown -> the label alone
+        - Mix-wide issue (no channel)            -> 'Main Mix'
+        Always present so each suggestion states what it refers to (spec: "Use
         channel labels when available").
         """
+        if self.channel_index is not None:
+            name = self.channel or ""
+            tag = f"Channel {self.channel_index:02d}"
+            return f"{tag}, {name}" if name else tag
+        if self.channel:
+            return self.channel
+        return "Main Mix"
+
+    def render(self) -> str:
+        """Render in the spec output format: icon + tag + message, then confidence."""
         label = self.confidence_label.value.capitalize()
-        ref = self.channel_ref
-        body = f"{ref} {self.message}" if ref else self.message
-        return f"{self.priority_icon} {body}\nConfidence: {label}"
+        return f"{self.priority_icon} {self.channel_ref} — {self.message}\nConfidence: {label}"
 
 
 # ===========================================================================

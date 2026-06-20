@@ -15,6 +15,7 @@ Then open http://127.0.0.1:8001
 """
 from __future__ import annotations
 
+import os
 import sys
 
 print("[DEBUG] Starting imports...", file=sys.stderr)
@@ -24,7 +25,7 @@ try:
     import uvicorn
     print("[DEBUG] Core imports OK", file=sys.stderr)
 
-    from src.audio_analysis import AudioMetrics, EnergyLevel
+    from src.audio_analysis import AudioAnalysisEngine, AudioMetrics, EnergyLevel
     from src.detection import DetectionEngine
     from src.interaction import UserInteractionAgent
     from src.mixer_state import MixerStateAgent, X32OscTransport
@@ -33,7 +34,11 @@ try:
     from src.recording_analysis import RecordingAnalysisEngine
     from src.suggestion import SuggestionGenerator
     from src.llm_client import LLMBackend, LLMConfig, build_llm_client
-    from src.system_loop import AudioSource, SystemLoopOrchestrator
+    from src.system_loop import (
+        AudioSource,
+        SoundDeviceAudioSource,
+        SystemLoopOrchestrator,
+    )
     from src.network_config import NetworkConfigStore
     from src.web_server import create_app
     from src.x32_connection import UdpOscChannel, X32ConnectionManager
@@ -59,8 +64,31 @@ OLLAMA_MODEL = "qwen2.5:1.5b"
 #: is good — it waits.
 WAITING_STATUS = "Waiting for communication — connect the X32 to begin."
 
-#: When False (default) the audio engine holds a steady clean mix -> no alerts.
+#: Analyze a REAL audio input (the room mic / an interface / the X32 over USB)
+#: instead of a simulated feed. True by default so readings + suggestions reflect
+#: the live signal. Set False to fall back to the simulated audio below.
+USE_REAL_AUDIO = os.environ.get("SOUND_ADVISOR_USE_REAL_AUDIO", "1") not in ("0", "", "false", "False")
+
+#: Which input device to capture. None = the Windows default input. Override with
+#: SOUND_ADVISOR_AUDIO_DEVICE = a device index (e.g. 1) or a name substring
+#: (e.g. "X32" or "Scarlett"). List devices:
+#:   py -3.10 -c "import sounddevice as sd; print(sd.query_devices())"
+def _audio_device():
+    raw = os.environ.get("SOUND_ADVISOR_AUDIO_DEVICE")
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return raw
+
+AUDIO_DEVICE = _audio_device()
+SAMPLE_RATE = int(os.environ.get("SOUND_ADVISOR_SAMPLE_RATE") or 48_000)
+AUDIO_CHANNELS = int(os.environ.get("SOUND_ADVISOR_AUDIO_CHANNELS") or 1)
+
+#: When False (default) the simulated engine holds a steady clean mix -> no alerts.
 #: Set True to replay the old rolling demo (clean -> clipping -> vocal masking).
+#: Only used when USE_REAL_AUDIO is False.
 SIMULATE_ISSUES = False
 SECONDS_PER_STATE = 6  # how long each simulated condition lasts (when simulating)
 
@@ -203,16 +231,29 @@ def build_demo_app():
     generator = SuggestionGenerator(build_llm_client(llm_config))
     interaction_agent = UserInteractionAgent(generator, profile_agent)
 
-    if SIMULATE_ISSUES:
+    if USE_REAL_AUDIO:
+        # Live analysis of a real input (room mic / interface / X32-over-USB).
+        # Readings + clipping/loudness/EQ suggestions reflect the actual signal.
+        # If the device can't be read, the orchestrator degrades to "audio lost"
+        # and the waiting banner — it never claims the mix is good.
+        audio_source = SoundDeviceAudioSource(
+            sample_rate=SAMPLE_RATE, channels=AUDIO_CHANNELS, device=AUDIO_DEVICE,
+        )
+        audio_engine = AudioAnalysisEngine.default()
+        recording_source = None
+        recording_engine = None
+    elif SIMULATE_ISSUES:
         # Old rolling demo: cycle clean -> clipping -> vocal masking, plus a
         # mismatched broadcast feed so the recording panel shows findings.
         ticks_per_state = int(SECONDS_PER_STATE * 1000 / 300)  # ~3.3 ticks/sec
+        audio_source = SilentAudioSource()
         audio_engine = DemoAudioEngine(ticks_per_state)
         recording_source = DemoRecordingSource()
         recording_engine = RecordingAnalysisEngine.default()
     else:
-        # Quiet default: a steady clean mix and no recording feed -> no rolling
-        # alerts; the dashboard rests on "Your mix is sounding good".
+        # Quiet simulated default: a steady clean mix and no recording feed -> no
+        # rolling alerts; the dashboard rests on "Your mix is sounding good".
+        audio_source = SilentAudioSource()
         audio_engine = SteadyCleanAudioEngine()
         recording_source = None
         recording_engine = None
@@ -230,7 +271,7 @@ def build_demo_app():
     )
 
     orchestrator = WaitingAwareOrchestrator(
-        audio_source=SilentAudioSource(),
+        audio_source=audio_source,
         audio_engine=audio_engine,
         mixer_agent=MixerStateAgent(DemoX32Transport()),
         detection_engine=DetectionEngine.default(),
