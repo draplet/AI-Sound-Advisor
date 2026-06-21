@@ -7,14 +7,7 @@ connection lights are indicating falso connections, when no connection to the x3
 it activly detects 
 
 *demo messages rolling 
-cant see the channel # /ch/01
+*cant see the channel # /ch/01
 *Olama AI not available on Run_Dashboard.bat
 *mix is sounding good
-put to a list of all the libraries and program extensions that I am using in the
-
---- TO DO (next) ---
-(a) add an audio-device picker/env to run_dashboard.bat so you can select the
-    X32 input easily (e.g. when the X32 is connected to the PC over USB).
-(b) wire the real X32 mixer state into run_dashboard (real channel faders/names
-    via OSC instead of the demo transport) so vocal-masking suggestions are
-    accurate and show the correct channel number/label.
+*Export dependency list”

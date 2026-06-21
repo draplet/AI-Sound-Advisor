@@ -108,3 +108,24 @@ class TestRefreshCadence:
         # Past the interval -> re-scan.
         mon.maybe_refresh(now_ms=61_000)
         assert calls["n"] > after_first
+
+    def test_overlapping_scan_is_skipped(self):
+        """If a scan is already in flight, refresh() returns the cache instead
+        of starting a second concurrent console scan."""
+        calls = {"n": 0}
+
+        class CountingTransport(FakeX32Transport):
+            def query(self, address):
+                calls["n"] += 1
+                return super().query(address)
+
+        agent = MixerStateAgent(CountingTransport({1: ("A", -5.0, 1, 0.0)}))
+        mon = ActiveChannelsMonitor(agent, is_connected=lambda: True, channel_count=2)
+        # Simulate a scan in progress by holding the scan lock.
+        assert mon._scan_lock.acquire(blocking=False)
+        try:
+            snap = mon.refresh(now_ms=0)
+        finally:
+            mon._scan_lock.release()
+        assert calls["n"] == 0          # no queries issued while one is "running"
+        assert snap.scanned_ms is None  # returned the (empty) cached snapshot

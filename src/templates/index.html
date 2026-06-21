@@ -638,7 +638,9 @@
       .then(renderActiveChannels).catch(function () {});
   }
   pollActiveChannels();
-  setInterval(pollActiveChannels, 20000);
+  // Poll cheaply every 15s; the server only re-scans the console every ~30s and
+  // serves the cached list in between.
+  setInterval(pollActiveChannels, 15000);
 
   // ---- Controls wiring ----
   document.querySelectorAll("#mode-seg button").forEach(function (b) {
