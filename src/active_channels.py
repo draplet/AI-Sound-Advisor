@@ -37,8 +37,14 @@ from src.mixer_state import X32_CHANNEL_COUNT, MixerStateAgent
 #: fader sits at FADER_MIN_DB (-90 dB), so this excludes parked channels.
 ACTIVE_FADER_THRESHOLD_DB: float = -60.0
 
-#: How often the list is allowed to re-scan the console (ms).
-DEFAULT_REFRESH_INTERVAL_MS: int = 60_000
+#: How often the list is allowed to re-scan the console (ms). 30 s is fresh
+#: enough to track fader moves while keeping OSC traffic to ~2 scans/min.
+DEFAULT_REFRESH_INTERVAL_MS: int = 30_000
+
+#: Per-query OSC timeout (seconds) to use *for the scan transport*. Kept short so
+#: a network hiccup mid-scan can't make a scan drag on — read_state aborts on the
+#: first slow query. Use when building the scanner's UdpOscTransport.
+SCAN_QUERY_TIMEOUT_S: float = 0.25
 
 
 class ActiveChannel(BaseModel):
@@ -79,6 +85,9 @@ class ActiveChannelsMonitor:
         self._threshold = threshold_db
         self._interval = refresh_interval_ms
         self._lock = threading.Lock()
+        #: Held while a scan is in flight, so concurrent requests don't kick off
+        #: overlapping console scans (acquired non-blocking).
+        self._scan_lock = threading.Lock()
         self._snap = ActiveChannelsSnapshot(threshold_db=threshold_db)
 
     # ------------------------------------------------------------------
@@ -103,11 +112,21 @@ class ActiveChannelsMonitor:
         return self.refresh(now_ms)
 
     def refresh(self, now_ms: int) -> ActiveChannelsSnapshot:
-        """Scan the console now and cache the result (failsafe, never raises)."""
-        snap = self._scan(now_ms)
-        with self._lock:
-            self._snap = snap
-        return snap
+        """Scan the console now and cache the result (failsafe, never raises).
+
+        If a scan is already in flight (another request triggered one), this
+        returns the cached snapshot instead of starting a second overlapping
+        console scan.
+        """
+        if not self._scan_lock.acquire(blocking=False):
+            return self.snapshot()
+        try:
+            snap = self._scan(now_ms)
+            with self._lock:
+                self._snap = snap
+            return snap
+        finally:
+            self._scan_lock.release()
 
     # ------------------------------------------------------------------
     # Internal
