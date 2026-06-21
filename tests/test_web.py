@@ -33,6 +33,7 @@ from fastapi.testclient import TestClient
 
 from src.audio_analysis import AudioMetrics, EnergyLevel
 from src.detection import DetectionEngine, IssueType
+from src.active_channels import ActiveChannelsMonitor
 from src.interaction import UserInteractionAgent
 from src.mixer_state import MixerStateAgent, X32OscTransport
 from src.pacing import SuggestionPacingAgent
@@ -802,3 +803,69 @@ class TestChatEndpoint:
         env = make_env()
         body = env.client.get("/").text.lower()
         assert "chat" in body
+
+
+# ===========================================================================
+# SECTION 17 — Active Channels endpoint
+# ===========================================================================
+
+def _app_with_monitor(monitor):
+    """Minimal app wired only with what the active-channels endpoint needs."""
+    profile_agent = ContextProfileAgent.in_memory("ac-test")
+    generator = SuggestionGenerator()
+    interaction_agent = UserInteractionAgent(generator, profile_agent)
+    orch = SystemLoopOrchestrator(
+        audio_source=FakeAudioSource(),
+        audio_engine=StubAudioEngine(clean_metrics()),
+        mixer_agent=MixerStateAgent(FakeX32Transport()),
+        detection_engine=DetectionEngine.default(),
+        profile_agent=profile_agent,
+        pacing_agent=SuggestionPacingAgent(),
+        suggestion_generator=generator,
+        interaction_agent=interaction_agent,
+        channels=(3,),
+    )
+    app = create_app(
+        orchestrator=orch, profile_agent=profile_agent,
+        interaction_agent=interaction_agent, clock=make_clock(),
+        active_channels_monitor=monitor,
+    )
+    return TestClient(app)
+
+
+class TestActiveChannelsEndpoint:
+
+    def test_lists_active_channels_when_connected(self):
+        # FakeX32Transport answers every channel as "Lead Vocal", fader 0.25
+        # (well above -60 dB), unmuted -> all scanned channels are active.
+        monitor = ActiveChannelsMonitor(
+            MixerStateAgent(FakeX32Transport()),
+            is_connected=lambda: True, channel_count=4,
+        )
+        client = _app_with_monitor(monitor)
+        data = client.get("/api/x32/active-channels").json()
+        assert data["available"] is True
+        assert len(data["channels"]) == 4
+        assert data["channels"][0]["name"] == "Lead Vocal"
+        assert "fader_db" in data["channels"][0]
+
+    def test_unavailable_when_not_connected(self):
+        monitor = ActiveChannelsMonitor(
+            MixerStateAgent(FakeX32Transport()),
+            is_connected=lambda: False, channel_count=4,
+        )
+        client = _app_with_monitor(monitor)
+        data = client.get("/api/x32/active-channels").json()
+        assert data["available"] is False
+        assert data["channels"] == []
+
+    def test_empty_when_no_monitor_wired(self):
+        env = make_env()
+        data = env.client.get("/api/x32/active-channels").json()
+        assert data["available"] is False
+        assert data["channels"] == []
+
+    def test_page_has_channels_tab(self):
+        env = make_env()
+        body = env.client.get("/").text.lower()
+        assert "channels" in body

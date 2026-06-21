@@ -43,6 +43,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from src.active_channels import ActiveChannelsMonitor
 from src.detection import Issue, IssueType, Priority, confidence_level
 from src.event_log import SessionLogger
 from src.interaction import IGNORE_DEFAULT_MS, UserInteractionAgent
@@ -376,6 +377,7 @@ def create_app(
     default_x32_ip: str = DEFAULT_X32_IP,
     default_x32_port: int = X32_OSC_PORT,
     network_store: Optional[NetworkConfigStore] = None,
+    active_channels_monitor: Optional[ActiveChannelsMonitor] = None,
 ) -> FastAPI:
     """Build the dashboard FastAPI app around a wired orchestrator."""
     app = FastAPI(title="AI Sound Advisor")
@@ -399,6 +401,9 @@ def create_app(
     #: Persistent X32 network settings (spec NETWORKING INTERFACE). When present,
     #: its saved IP/port become the defaults the Connect form prefills.
     app.state.network_store = network_store
+    #: Optional Active Channels monitor (in-use X32 channels by fader). None hides
+    #: the panel / returns an empty list.
+    app.state.active_channels_monitor = active_channels_monitor
 
     def _log_action(action: str, channel: Optional[str] = None,
                     detail: Optional[str] = None) -> None:
@@ -676,6 +681,22 @@ def create_app(
                 {"connected": False, "status_label": "Not connected"},
                 status_code=200,
             )
+
+    @app.get("/api/x32/active-channels")
+    def x32_active_channels() -> JSONResponse:
+        """In-use channels (unmuted, fader above threshold) from the live X32.
+
+        Scans the console at most once per the monitor's interval; cheap to poll.
+        Returns an empty/unavailable snapshot when no monitor is wired.
+        """
+        monitor = app.state.active_channels_monitor
+        if monitor is None:
+            return JSONResponse({"available": False, "channels": []})
+        try:
+            snap = monitor.maybe_refresh(app.state.clock())
+            return JSONResponse(snap.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse({"available": False, "channels": []})
 
     # ------------------------------------------------------------------
     # Network settings (spec NETWORKING INTERFACE: persistent config.json)

@@ -76,6 +76,14 @@
   .suggestion .top { display: flex; justify-content: space-between; align-items: center; }
   .suggestion .msg { font-size: 20px; margin: 6px 0 10px; }
   .suggestion .msg .ch-ref { font-weight: 700; color: #bcd3ff; }
+  .chan-row {
+    display: flex; align-items: baseline; gap: 12px; padding: 8px 4px;
+    border-bottom: 1px solid var(--border); font-size: 17px;
+  }
+  .chan-row .chan-id { font-weight: 700; color: #bcd3ff; min-width: 52px; }
+  .chan-row .chan-name { flex: 1; }
+  .chan-row .chan-db { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .chan-note { font-size: 13px; color: var(--muted); margin: 8px 4px 0; }
   .suggestion .meta { font-size: 15px; color: var(--muted); }
   .badge {
     font-size: 13px; padding: 3px 10px; border-radius: 999px;
@@ -232,12 +240,18 @@
         <button class="tab" data-tab="broadcast">
           Broadcast <span class="count" id="tab-bcast-count"></span>
         </button>
+        <button class="tab" data-tab="channels">
+          Channels <span class="count" id="tab-chan-count"></span>
+        </button>
       </div>
       <div id="suggestions-list" class="tab-content">
         <div class="all-clear">Waiting for communication…</div>
       </div>
       <div id="broadcast-list" class="tab-content" style="display:none;">
         <div class="metrics">Not monitoring a recording feed.</div>
+      </div>
+      <div id="channels-list" class="tab-content" style="display:none;">
+        <div class="metrics">Connect the X32 to see active channels.</div>
       </div>
       <div id="warnings"></div>
     </section>
@@ -569,7 +583,7 @@
     });
   }
 
-  // ---- Tab switching (Suggestions / Broadcast) ----
+  // ---- Tab switching (Suggestions / Broadcast / Channels) ----
   function switchTab(tab) {
     activeTab = tab;
     Array.prototype.forEach.call(document.querySelectorAll("#main-tabs .tab"), function (b) {
@@ -579,10 +593,52 @@
       tab === "suggestions" ? "" : "none";
     document.getElementById("broadcast-list").style.display =
       tab === "broadcast" ? "" : "none";
+    document.getElementById("channels-list").style.display =
+      tab === "channels" ? "" : "none";
+    if (tab === "channels") pollActiveChannels();   // refresh on view
   }
   Array.prototype.forEach.call(document.querySelectorAll("#main-tabs .tab"), function (b) {
     b.addEventListener("click", function () { switchTab(b.getAttribute("data-tab")); });
   });
+
+  // ---- Active Channels (in-use X32 faders, refreshed ~every 20s) ----
+  function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+
+  function renderActiveChannels(snap) {
+    var body = document.getElementById("channels-list");
+    var count = document.getElementById("tab-chan-count");
+    if (!snap || !snap.available) {
+      if (count) count.textContent = "";
+      var msg = (snap && snap.warning) ? snap.warning
+        : "Connect the X32 to see active channels.";
+      body.innerHTML = '<div class="metrics">' + escapeHtml(msg) + "</div>";
+      return;
+    }
+    var chans = snap.channels || [];
+    if (count) count.textContent = chans.length ? "(" + chans.length + ")" : "";
+    if (!chans.length) {
+      body.innerHTML = '<div class="metrics">No active channels above '
+        + snap.threshold_db + " dB.</div>";
+      return;
+    }
+    body.innerHTML = chans.map(function (c) {
+      var nm = (c.name && c.name.trim()) ? c.name : ("Channel " + c.index);
+      return '<div class="chan-row">' +
+        '<span class="chan-id">Ch ' + pad2(c.index) + "</span>" +
+        '<span class="chan-name">' + escapeHtml(nm) + "</span>" +
+        '<span class="chan-db">' + c.fader_db.toFixed(1) + " dB</span>" +
+      "</div>";
+    }).join("") +
+    '<div class="chan-note">Unmuted channels with fader above '
+      + snap.threshold_db + " dB. Updates ~every minute.</div>";
+  }
+
+  function pollActiveChannels() {
+    fetch("/api/x32/active-channels").then(function (r) { return r.json(); })
+      .then(renderActiveChannels).catch(function () {});
+  }
+  pollActiveChannels();
+  setInterval(pollActiveChannels, 20000);
 
   // ---- Controls wiring ----
   document.querySelectorAll("#mode-seg button").forEach(function (b) {

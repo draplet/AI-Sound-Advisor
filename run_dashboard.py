@@ -25,10 +25,11 @@ try:
     import uvicorn
     print("[DEBUG] Core imports OK", file=sys.stderr)
 
+    from src.active_channels import ActiveChannelsMonitor
     from src.audio_analysis import AudioAnalysisEngine, AudioMetrics, EnergyLevel
     from src.detection import DetectionEngine
     from src.interaction import UserInteractionAgent
-    from src.mixer_state import MixerStateAgent, X32OscTransport
+    from src.mixer_state import MixerStateAgent, UdpOscTransport, X32OscTransport
     from src.pacing import SuggestionPacingAgent
     from src.profile_store import ContextProfileAgent
     from src.recording_analysis import RecordingAnalysisEngine
@@ -270,6 +271,15 @@ def build_demo_app():
         info_timeout=net.timeout_s,             # honour the saved Timeout setting
     )
 
+    # Active Channels panel: scans the REAL X32 over OSC (saved IP/port) for the
+    # channels in use (unmuted, fader above threshold). Gated on the master
+    # connection so it does no network I/O while disconnected; scans at most once
+    # a minute so it never touches the analysis loop.
+    active_channels_monitor = ActiveChannelsMonitor(
+        MixerStateAgent(UdpOscTransport(net.ip, net.port, timeout=net.timeout_s)),
+        is_connected=lambda: x32_connection.status().connected,
+    )
+
     orchestrator = WaitingAwareOrchestrator(
         audio_source=audio_source,
         audio_engine=audio_engine,
@@ -290,6 +300,7 @@ def build_demo_app():
         interaction_agent=interaction_agent,
         x32_connection=x32_connection,
         network_store=network_store,
+        active_channels_monitor=active_channels_monitor,
     )
 
 

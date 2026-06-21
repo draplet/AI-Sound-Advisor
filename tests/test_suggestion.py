@@ -232,6 +232,26 @@ class TestFallback:
         assert suggestion.source == SuggestionSource.FALLBACK
         assert suggestion.message != ""
 
+    def test_placeholder_llm_response_falls_back(self):
+        """A small model emitting an unfilled template like
+        '[Insert Channel Label Here]' must be rejected for the concrete
+        deterministic message (which names the real target)."""
+        bad = "Adjust the fader on the [Insert Channel Label Here] to 60%."
+        generator = SuggestionGenerator(FakeLLMClient(response=bad))
+
+        suggestion = generator.generate(make_issue(channel="Lead Vocal"))
+
+        assert suggestion.source == SuggestionSource.FALLBACK
+        assert "[" not in suggestion.message and "]" not in suggestion.message
+        assert "Lead Vocal" in suggestion.message
+
+    def test_chat_keeps_brackets(self):
+        """Chat does not reject brackets (they can be legitimate there)."""
+        generator = SuggestionGenerator(FakeLLMClient(response="Use a [high-pass] filter."))
+        reply, source = generator.chat("how do I clean up rumble?")
+        assert source == SuggestionSource.LLM
+        assert "[high-pass]" in reply
+
     def test_fallback_uses_channel_label_when_present(self):
         generator = SuggestionGenerator()
         suggestion = generator.generate(make_issue(channel="Lead Vocal"))

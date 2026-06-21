@@ -26,6 +26,7 @@ guidance, satisfying the never-crash failsafe.
 """
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Callable, Dict, List, Optional, Tuple
@@ -43,6 +44,12 @@ from src.detection import (
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+
+#: Matches an unfilled template placeholder in LLM output, e.g.
+#: "[Insert Channel Label Here]". Small local models sometimes emit these form
+#: letters instead of a concrete answer; we reject them and fall back to the
+#: deterministic basic-alert template (which always names the real target).
+PLACEHOLDER_RE = re.compile(r"\[[^\]]{0,80}\]")
 
 #: Priority -> status icon (spec: Red = urgent, Yellow = warning, Blue = info).
 PRIORITY_ICONS: Dict[Priority, str] = {
@@ -217,6 +224,7 @@ class SuggestionGenerator:
         return self._invoke(
             self._build_chat_prompt(message, history or [], mix_summary),
             lambda: self._chat_fallback(),
+            reject_placeholders=False,
         )
 
     def explain(self, issue: Issue) -> str:
@@ -240,15 +248,27 @@ class SuggestionGenerator:
     # ------------------------------------------------------------------
 
     def _invoke(
-        self, prompt: str, fallback: Callable[[], str]
+        self,
+        prompt: str,
+        fallback: Callable[[], str],
+        *,
+        reject_placeholders: bool = True,
     ) -> Tuple[str, SuggestionSource]:
-        """Call the LLM; on absence/failure/empty output use ``fallback``."""
+        """Call the LLM; on absence/failure/empty/placeholder output use ``fallback``.
+
+        ``reject_placeholders`` guards the issue suggestions/explanations: if the
+        model returns an unfilled template like "[Insert Channel Label Here]",
+        we discard it and use the deterministic template instead. It is disabled
+        for free-text chat (where brackets can be legitimate).
+        """
         if self._client is None:
             return fallback(), SuggestionSource.FALLBACK
         try:
             text = self._client.generate(prompt).strip()
             if not text:
                 raise ValueError("empty LLM response")
+            if reject_placeholders and PLACEHOLDER_RE.search(text):
+                raise ValueError("LLM returned an unfilled placeholder")
             return text, SuggestionSource.LLM
         except Exception:  # noqa: BLE001 — failsafe: fall back to basic alerts
             return fallback(), SuggestionSource.FALLBACK
@@ -276,10 +296,17 @@ class SuggestionGenerator:
                 "Give concise numbered, step-by-step instructions to fix this "
                 "on a Behringer X32. Keep it to 3-5 short steps."
             )
-        else:  # suggest
+        elif issue.channel:  # suggest, channel-specific
             ask = (
                 "Give one short, actionable suggestion (one or two sentences) "
-                "to address this. Refer to the channel by its label."
+                f'to address this. Refer to the channel as "{issue.channel}". '
+                "Do not use placeholders or square brackets."
+            )
+        else:  # suggest, whole mix
+            ask = (
+                "Give one short, actionable suggestion (one or two sentences) "
+                "to address this on the overall mix. Do not reference a specific "
+                "channel, and do not use placeholders or square brackets."
             )
         return header + ask
 
