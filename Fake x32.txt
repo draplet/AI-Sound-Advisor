@@ -1,0 +1,91 @@
+Network
+IP, subnet, port, confirmation/ test with Info being displayed using /info
+/xremote to constantly request information
+
+Imitate console demo board
+Make a demo program to imitate an x32 that i can run on another computer that have active channels 
+communicate over Ip and behave like a real console 
+create a demo signal loop to simulate activity and problems with channels.
+labels channels and create 
+ch 1	vox
+ch 2	guitar 1
+ch 3	vox 2
+ch 4	guitar dave
+ch 5	celio
+ch 6	bass
+ch 7	electric guitar
+ch 12	piano
+ch 13	chior 1
+ch 14	chior 2
+ch 15	Pasor
+ch 16	Room Mic 
+Bus 3	recorder
+Bus 4 	reverb
+   
+
+
+I need to upgrade my main application to include a persistent, fully configurable network settings system for a Behringer X32. 
+
+Please modify the codebase according to these exact specifications:
+
+1. ARCHITECTURE & STORAGE:
+   - Create a persistent JSON storage system (`config.json`) to save network settings.
+   - If the file is missing, automatically initialize it with the factory default shipping settings of a Behringer X32:
+     * Default IP: 192.168.1.128
+     * Default Subnet: 255.255.255.0
+     * Default Gateway: 192.168.1.1
+     * Default UDP Target Port: 10023
+     * Default Local Timeout: 1500ms
+
+2. SETTINGS UI WINDOW:
+   - Create a dedicated "Network Settings" window accessed via a gear icon or button on the Main Page.
+   - The settings window must display editable input fields for: IP, Subnet, Gateway, Port, and Timeout.
+   - Include a "Save Settings" button that writes changes permanently to disk.
+
+3. CONNECTION ENGINE & TEST MECHANISM:
+   - Add a "Test Connection" button inside the Settings window.
+   - When clicked, it must send an OSC `/info` packet to the configured IP/Port. 
+   - Parse the returning OSC packet and display the console name/firmware response directly in a visual status label (e.g., "Connected to: X32 Firmware 4.06").
+   - When the master connection is active, establish a background thread that sends `/xremote` every 9 seconds to continuously subscribe to console updates. Handle connection drops gracefully.
+
+Please output the clean, modular Python UI code implementing this workflow. Use 'python-osc' if needed for clean parsing. update the master file with these changes in simple english.
+
+
+
+I need a completely independent Python program called "Fake X32" (`fake_x32.py`). This program will run on a separate computer on my
+ local network to simulate a real Behringer X32 console over live UDP OSC connections so I can test my main application using `run_real_test.bat`.
+
+Please build the "Fake X32" engine with these components:
+
+1. OSC & NETWORK SERVER:
+   - Bind to UDP port 10023 and listen for incoming commands from any local IP.
+   - If it receives an incoming `/info` command, respond back with a standard X32 OSC bundle string: `v4.06`, `pc`, `X32`, `0.00`.
+   - If it receives a `/xremote` command, register the client's IP and port into an active subscription list for live tracking updates.
+
+2. CHANNEL & BUS CONFIGURATION:
+   Pre-populate and label the following simulated channel strips inside the data model:
+   - Ch 1: vox
+   - Ch 2: guitar 1
+   - Ch 3: vox 2
+   - Ch 4: guitar dave
+   - Ch 5: celio
+   - Ch 6: bass
+   - Ch 7: electric guitar
+   - Ch 12: piano
+   - Ch 13: chior 1
+   - Ch 14: chior 2
+   - Ch 15: Pasor
+   - Ch 16: Room Mic
+   - Bus 3: recorder
+   - Bus 4: reverb
+
+3. DEMO SIGNAL LOOP & PROBLEM SIMULATION:
+   - Run a continuous background loop that simulates live stage activity by subtly fluctuating fader positions (values 0.0 to 1.0) and volume meters for the active channels.
+   - Build an intentional "Problem Simulator" thread. Every 30–45 seconds, randomly introduce a predictable audio
+ fault to a channel (e.g., spike Ch 1 "vox" into clipping/distortion, completely drop the signal on Ch 6 "bass" to simulate a broken cable, or make a Bus mute toggle unexpectedly).
+   - Broadcast these live changes via OSC to any active `/xremote` client subscribers so the main program can detect and display the anomalies live.
+
+Provide the full script for `fake_x32.py` with a simple terminal dashboard showing its current IP and active connections.
+make everything the that is needed for a standalone file that i can run.  put it in its own folder. 
+
+  

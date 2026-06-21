@@ -37,19 +37,23 @@ import asyncio
 import os
 import time
 from pathlib import Path
-from typing import Callable, Dict, Mapping, Optional, Tuple, Union
+from typing import Callable, Dict, List, Mapping, Optional, Tuple, Union
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from src.active_channels import ActiveChannelsMonitor
 from src.detection import Issue, IssueType, Priority, confidence_level
+from src.event_log import SessionLogger
 from src.interaction import IGNORE_DEFAULT_MS, UserInteractionAgent
 from src.mixer_state import X32_OSC_PORT
+from src.network_config import NetworkConfigStore, NetworkSettings
 from src.profile_store import ContextProfileAgent
 from src.state_manager import LoudnessMode, Scene
 from src.suggestion import PRIORITY_ICONS
 from src.system_loop import SystemLoopOrchestrator
+from src.x32_connection import X32ConnectionManager
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -129,6 +133,9 @@ class ServerConfig(BaseModel):
     sample_rate: int = 48_000
     audio_channels: int = 1
     profile_dir: str = "profiles"
+    log_dir: str = "logs"
+    #: Optional recorder/stream feed input device (enables recording analysis).
+    recording_device: Optional[Union[int, str]] = None
 
     @classmethod
     def from_env(cls, environ: Optional[Mapping[str, str]] = None) -> "ServerConfig":
@@ -142,6 +149,8 @@ class ServerConfig(BaseModel):
             sample_rate=_env_int(env, f"{ENV_PREFIX}SAMPLE_RATE", 48_000),
             audio_channels=_env_int(env, f"{ENV_PREFIX}AUDIO_CHANNELS", 1),
             profile_dir=env.get(f"{ENV_PREFIX}PROFILE_DIR") or "profiles",
+            log_dir=env.get(f"{ENV_PREFIX}LOG_DIR") or "logs",
+            recording_device=_env_device(env, f"{ENV_PREFIX}RECORDING_DEVICE"),
         )
 
 
@@ -167,6 +176,77 @@ class IgnoreRequest(BaseModel):
     issue: IssueType
     channel: Optional[str] = None
     duration_ms: int = IGNORE_DEFAULT_MS
+
+
+class IssueActionRequest(BaseModel):
+    """Identifies the issue an operator acted on (More / Tell me how / Mark normal)."""
+
+    issue: IssueType
+    channel: Optional[str] = None
+
+
+class FocusRequest(BaseModel):
+    """Toggle for Focus Mode (show only the highest-priority issue)."""
+
+    enabled: bool
+
+
+class ChatTurn(BaseModel):
+    """One prior turn of the AI chat conversation."""
+
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    """A chat message plus the conversation so far (for multi-turn context)."""
+
+    message: str
+    history: List[ChatTurn] = Field(default_factory=list)
+
+
+class ConnectRequest(BaseModel):
+    """Connect-to-X32 request: which mixer to reach over OSC.
+
+    Both fields are optional so the dashboard's "Connect" button can fall back
+    to the server's configured defaults when the operator leaves them blank.
+    """
+
+    ip: Optional[str] = None
+    port: Optional[int] = None
+
+
+class NetworkSettingsRequest(BaseModel):
+    """Editable network settings from the Settings window (spec NETWORKING INTERFACE)."""
+
+    ip: str
+    subnet: str
+    gateway: str
+    port: int = Field(ge=1, le=65535)
+    timeout_ms: int = Field(ge=1)
+
+
+class TestConnectionRequest(BaseModel):
+    """One-shot "Test Connection" probe target.
+
+    All fields optional so the Settings window can test the values currently
+    saved on disk without re-sending them.
+    """
+
+    ip: Optional[str] = None
+    port: Optional[int] = None
+
+
+def _issue_from(req: "IssueActionRequest") -> Issue:
+    """Rebuild a minimal Issue for an Agent 7 action.
+
+    The action handlers key only on ``(issue, channel)``; priority/confidence
+    are placeholders (mirrors how /api/ignore reconstructs an Issue).
+    """
+    return Issue(
+        issue=req.issue, channel=req.channel,
+        priority=Priority.LOW, confidence=0.0,
+    )
 
 
 # ===========================================================================
@@ -199,6 +279,10 @@ def _build_payload(frame, cache: Dict[IssueKey, object]) -> dict:
             {
                 "issue": issue.issue.value,
                 "channel": issue.channel,
+                "channel_index": issue.channel_index,
+                # OSC-style channel tag (e.g. /ch/01/"Lead Vocal") for the UI to
+                # lead the message with; None for main-mix issues.
+                "channel_ref": cached.channel_ref if cached is not None else None,
                 "priority": issue.priority.value,
                 "confidence": issue.confidence,
                 "confidence_label": confidence_level(issue.confidence).value,
@@ -227,17 +311,53 @@ def _degraded_payload() -> dict:
         "warnings": [SERVER_DEGRADED_STATUS],
         "scene": Scene.SERMON.value,
         "loudness_mode": LoudnessMode.CONSERVATIVE.value,
+        "calibrated": False,
+        "focus_mode": False,
+        "recording": None,
     }
+
+
+def _apply_focus(payload: dict) -> None:
+    """Trim the payload to only the highest-priority issue (Focus Mode).
+
+    The orchestrator already returns issues sorted by spec priority (then
+    confidence), and the display suggestions are built in that same order, so
+    the most urgent item is the first of each list.
+    """
+    payload["issues"] = (payload.get("issues") or [])[:1]
+    payload["suggestions"] = (payload.get("suggestions") or [])[:1]
+
+
+def _mix_summary(app: FastAPI) -> str:
+    """A short natural-language summary of the current mix, to ground the chat."""
+    try:
+        frame = app.state.orchestrator.last_frame
+        if frame is None:
+            return ""
+        if getattr(frame, "all_clear", False):
+            return "the mix currently sounds good"
+        parts = []
+        for issue in getattr(frame, "issues", [])[:4]:
+            where = f" on {issue.channel}" if issue.channel else " on the main mix"
+            parts.append(f"{issue.issue.value}{where}")
+        return "active issues: " + ", ".join(parts) if parts else ""
+    except Exception:  # noqa: BLE001 — failsafe
+        return ""
 
 
 def _tick_payload(app: FastAPI) -> dict:
     """Run one orchestrator tick and build the UI payload (never raises)."""
+    focus = bool(getattr(app.state, "focus_mode", False))
     try:
         orchestrator = app.state.orchestrator
         frame = orchestrator.tick(app.state.clock())
-        return _build_payload(frame, app.state.suggestion_cache)
+        payload = _build_payload(frame, app.state.suggestion_cache)
     except Exception:  # noqa: BLE001 — failsafe: never take the dashboard down
-        return _degraded_payload()
+        payload = _degraded_payload()
+    payload["focus_mode"] = focus
+    if focus:
+        _apply_focus(payload)
+    return payload
 
 
 # ===========================================================================
@@ -252,6 +372,12 @@ def create_app(
     clock: Optional[Callable[[], int]] = None,
     ws_interval_ms: int = DEFAULT_WS_INTERVAL_MS,
     template_path: Optional[Path] = None,
+    event_logger: Optional[SessionLogger] = None,
+    x32_connection: Optional[X32ConnectionManager] = None,
+    default_x32_ip: str = DEFAULT_X32_IP,
+    default_x32_port: int = X32_OSC_PORT,
+    network_store: Optional[NetworkConfigStore] = None,
+    active_channels_monitor: Optional[ActiveChannelsMonitor] = None,
 ) -> FastAPI:
     """Build the dashboard FastAPI app around a wired orchestrator."""
     app = FastAPI(title="AI Sound Advisor")
@@ -263,6 +389,34 @@ def create_app(
     app.state.ws_interval_ms = ws_interval_ms
     app.state.template_path = Path(template_path) if template_path else TEMPLATE_PATH
     app.state.suggestion_cache: Dict[IssueKey, object] = {}
+    #: Optional logging system (spec LOGGING SYSTEM); None disables logging.
+    app.state.event_logger = event_logger
+    #: Focus Mode: when True, only the highest-priority issue is shown.
+    app.state.focus_mode = False
+    #: Master X32 connection (spec CONNECTION STATUS INDICATOR / connect workflow).
+    #: Defaults to a real UDP manager so the Connect button works out of the box.
+    app.state.x32_connection = x32_connection or X32ConnectionManager()
+    app.state.default_x32_ip = default_x32_ip
+    app.state.default_x32_port = default_x32_port
+    #: Persistent X32 network settings (spec NETWORKING INTERFACE). When present,
+    #: its saved IP/port become the defaults the Connect form prefills.
+    app.state.network_store = network_store
+    #: Optional Active Channels monitor (in-use X32 channels by fader). None hides
+    #: the panel / returns an empty list.
+    app.state.active_channels_monitor = active_channels_monitor
+
+    def _log_action(action: str, channel: Optional[str] = None,
+                    detail: Optional[str] = None) -> None:
+        """Record a user action if a logger is attached (never raises)."""
+        logger = app.state.event_logger
+        if logger is None:
+            return
+        try:
+            logger.log_user_action(
+                action, now_ms=app.state.clock(), channel=channel, detail=detail
+            )
+        except Exception:  # noqa: BLE001 — failsafe
+            pass
 
     # ------------------------------------------------------------------
     # Page (step 9: display in UI)
@@ -304,6 +458,31 @@ def create_app(
             return JSONResponse({"ok": False}, status_code=200)
         return JSONResponse({"ok": True, "loudness_mode": req.loudness_mode.value})
 
+    @app.post("/api/chat")
+    def chat(req: ChatRequest) -> JSONResponse:
+        try:
+            history = [{"role": t.role, "content": t.content} for t in req.history]
+            reply, source = app.state.interaction_agent.chat(
+                req.message, history=history, mix_summary=_mix_summary(app)
+            )
+            _log_action("chat", detail=req.message)
+            return JSONResponse({
+                "reply": reply,
+                "source": getattr(source, "value", str(source)),
+            })
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse(
+                {"reply": "Sorry, I couldn't process that right now.",
+                 "source": "fallback"},
+                status_code=200,
+            )
+
+    @app.post("/api/focus")
+    def set_focus(req: FocusRequest) -> JSONResponse:
+        app.state.focus_mode = bool(req.enabled)
+        _log_action("focus_on" if app.state.focus_mode else "focus_off")
+        return JSONResponse({"ok": True, "focus_mode": app.state.focus_mode})
+
     # ------------------------------------------------------------------
     # AI prompt panel (Agent 7 -> Agent 5)
     # ------------------------------------------------------------------
@@ -320,6 +499,7 @@ def create_app(
             result = app.state.interaction_agent.handle_prompt(
                 req.text, now_ms=app.state.clock(), issue=issue
             )
+            _log_action(result.action.value, detail=req.text)
             return JSONResponse(result.model_dump(mode="json"))
         except Exception:  # noqa: BLE001 — failsafe
             return JSONResponse(
@@ -341,12 +521,267 @@ def create_app(
             result = app.state.interaction_agent.ignore(
                 issue, now_ms=app.state.clock(), duration_ms=req.duration_ms
             )
+            _log_action("ignore", channel=req.channel)
             return JSONResponse(result.model_dump(mode="json"))
         except Exception:  # noqa: BLE001 — failsafe
             return JSONResponse(
                 {"action": "ignore", "message": "Could not ignore that."},
                 status_code=200,
             )
+
+    # ------------------------------------------------------------------
+    # Suggestion actions (Agent 7: More / Tell me how / Mark as normal)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/more")
+    def more_detail(req: IssueActionRequest) -> JSONResponse:
+        try:
+            result = app.state.interaction_agent.more(_issue_from(req))
+            _log_action("more", channel=req.channel)
+            return JSONResponse(result.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse(
+                {"action": "more", "message": "Could not load more detail."},
+                status_code=200,
+            )
+
+    @app.post("/api/tellmehow")
+    def tell_me_how(req: IssueActionRequest) -> JSONResponse:
+        try:
+            result = app.state.interaction_agent.how_to(_issue_from(req))
+            _log_action("tell_me_how", channel=req.channel)
+            return JSONResponse(result.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse(
+                {"action": "tell_me_how", "message": "Could not load the steps."},
+                status_code=200,
+            )
+
+    @app.post("/api/mark-normal")
+    def mark_normal(req: IssueActionRequest) -> JSONResponse:
+        try:
+            result = app.state.interaction_agent.mark_normal(_issue_from(req))
+            _log_action("mark_normal", channel=req.channel)
+            return JSONResponse(result.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse(
+                {"action": "mark_normal", "message": "Could not mark that as normal."},
+                status_code=200,
+            )
+
+    # ------------------------------------------------------------------
+    # End-of-event profile save flow (Agent 5: summary + persist)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/profile/summary")
+    def profile_summary() -> JSONResponse:
+        try:
+            agent = app.state.profile_agent
+            return JSONResponse({
+                "has_unsaved_changes": bool(agent.has_unsaved_changes),
+                "changes": list(agent.pending_changes()),
+            })
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse({"has_unsaved_changes": False, "changes": []})
+
+    @app.post("/api/profile/save")
+    def profile_save() -> JSONResponse:
+        try:
+            path = app.state.profile_agent.save()
+            _log_action("save_profile")
+            return JSONResponse({
+                "ok": True,
+                "message": f"Profile saved to {path.name}.",
+            })
+        except Exception:  # noqa: BLE001 — failsafe (e.g. no storage configured)
+            return JSONResponse(
+                {"ok": False, "message": "Could not save the profile."},
+                status_code=200,
+            )
+
+    # ------------------------------------------------------------------
+    # Calibration mode (Agent 5: capture a "good mix" baseline)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/calibrate")
+    def calibrate() -> JSONResponse:
+        try:
+            frame = app.state.orchestrator.tick(app.state.clock())
+            if frame.metrics is None:
+                return JSONResponse(
+                    {"ok": False, "message": "No audio to calibrate from."},
+                    status_code=200,
+                )
+            baseline = app.state.profile_agent.calibrate(frame.metrics)
+            _log_action("calibrate")
+            return JSONResponse({
+                "ok": True,
+                "message": "Captured this mix as the good-mix baseline.",
+                "baseline": baseline.model_dump(mode="json"),
+            })
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse(
+                {"ok": False, "message": "Could not calibrate."}, status_code=200
+            )
+
+    # ------------------------------------------------------------------
+    # X32 master connection (spec: connect workflow + status indicator)
+    # ------------------------------------------------------------------
+
+    def _default_target() -> Tuple[str, int]:
+        """The IP/port the Connect form prefills: saved settings if any, else config."""
+        store = app.state.network_store
+        if store is not None:
+            try:
+                s = store.settings
+                return s.ip, s.port
+            except Exception:  # noqa: BLE001 — failsafe
+                pass
+        return app.state.default_x32_ip, app.state.default_x32_port
+
+    @app.get("/api/x32/status")
+    def x32_status() -> JSONResponse:
+        """Current connection snapshot, plus the default IP/Port for the form."""
+        try:
+            state = app.state.x32_connection.status()
+            payload = state.model_dump(mode="json")
+        except Exception:  # noqa: BLE001 — failsafe
+            payload = {"connected": False, "status_label": "Not connected"}
+        default_ip, default_port = _default_target()
+        payload["default_ip"] = default_ip
+        payload["default_port"] = default_port
+        return JSONResponse(payload)
+
+    @app.post("/api/x32/connect")
+    def x32_connect(req: ConnectRequest) -> JSONResponse:
+        """Send /info to the X32, show its name/firmware, start /xremote keepalive."""
+        default_ip, default_port = _default_target()
+        ip = (req.ip or "").strip() or default_ip
+        port = req.port or default_port
+        try:
+            state = app.state.x32_connection.connect(ip, port)
+            _log_action("x32_connect", detail=f"{ip}:{port}")
+            return JSONResponse(state.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — failsafe (manager already never raises)
+            return JSONResponse(
+                {"connected": False,
+                 "status_label": "Could not connect to the X32."},
+                status_code=200,
+            )
+
+    @app.post("/api/x32/disconnect")
+    def x32_disconnect() -> JSONResponse:
+        """Stop the keepalive and close the OSC channel."""
+        try:
+            state = app.state.x32_connection.disconnect()
+            _log_action("x32_disconnect")
+            return JSONResponse(state.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse(
+                {"connected": False, "status_label": "Not connected"},
+                status_code=200,
+            )
+
+    @app.get("/api/x32/active-channels")
+    def x32_active_channels() -> JSONResponse:
+        """In-use channels (unmuted, fader above threshold) from the live X32.
+
+        Scans the console at most once per the monitor's interval; cheap to poll.
+        Returns an empty/unavailable snapshot when no monitor is wired.
+        """
+        monitor = app.state.active_channels_monitor
+        if monitor is None:
+            return JSONResponse({"available": False, "channels": []})
+        try:
+            snap = monitor.maybe_refresh(app.state.clock())
+            return JSONResponse(snap.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse({"available": False, "channels": []})
+
+    # ------------------------------------------------------------------
+    # Network settings (spec NETWORKING INTERFACE: persistent config.json)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/network/settings")
+    def network_settings_get() -> JSONResponse:
+        """Return the saved X32 network settings (factory defaults if unset)."""
+        store = app.state.network_store
+        try:
+            settings = store.load() if store is not None else NetworkSettings()
+            return JSONResponse(settings.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse(NetworkSettings().model_dump(mode="json"))
+
+    @app.post("/api/network/settings")
+    def network_settings_save(req: NetworkSettingsRequest) -> JSONResponse:
+        """Persist edited network settings to config.json (Save Settings button)."""
+        store = app.state.network_store
+        settings = NetworkSettings(**req.model_dump())
+        if store is None:
+            return JSONResponse(
+                {"ok": False,
+                 "message": "No settings storage configured.",
+                 "settings": settings.model_dump(mode="json")},
+                status_code=200,
+            )
+        try:
+            saved = store.save(settings)
+            _log_action("network_settings_save", detail=f"{saved.ip}:{saved.port}")
+            return JSONResponse({
+                "ok": True,
+                "message": "Network settings saved.",
+                "settings": saved.model_dump(mode="json"),
+            })
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse(
+                {"ok": False, "message": "Could not save settings.",
+                 "settings": settings.model_dump(mode="json")},
+                status_code=200,
+            )
+
+    @app.post("/api/network/test")
+    def network_test(req: TestConnectionRequest) -> JSONResponse:
+        """One-shot /info probe of the configured (or supplied) IP/Port.
+
+        Does not start or disturb the master connection — it just reports whether
+        the mixer answers and, if so, its model/firmware (spec: Test Connection).
+        """
+        store = app.state.network_store
+        settings = None
+        if store is not None:
+            try:
+                settings = store.settings
+            except Exception:  # noqa: BLE001 — failsafe
+                settings = None
+        default_ip, default_port = _default_target()
+        ip = (req.ip or "").strip() or (settings.ip if settings else default_ip)
+        port = req.port or (settings.port if settings else default_port)
+        timeout = settings.timeout_s if settings else None
+        try:
+            state = app.state.x32_connection.test(ip, port, timeout)
+            _log_action("network_test", detail=f"{ip}:{port}")
+            return JSONResponse(state.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — failsafe (manager.test already never raises)
+            return JSONResponse(
+                {"connected": False,
+                 "status_label": f"No response from {ip}:{port}."},
+                status_code=200,
+            )
+
+    # ------------------------------------------------------------------
+    # Logging system review (spec: post-service review)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/log/recent")
+    def recent_log(limit: int = 100) -> JSONResponse:
+        logger = app.state.event_logger
+        if logger is None:
+            return JSONResponse({"records": []})
+        try:
+            records = [r.model_dump(mode="json") for r in logger.recent(limit)]
+            return JSONResponse({"records": records})
+        except Exception:  # noqa: BLE001 — failsafe
+            return JSONResponse({"records": []})
 
     # ------------------------------------------------------------------
     # Real-time WebSocket push
@@ -378,24 +813,54 @@ def build_default_app(config: Optional[ServerConfig] = None) -> FastAPI:
     Uses the real microphone capture (SoundDeviceAudioSource) and the standard
     agent set, configured from ``config`` (defaults to ``ServerConfig.from_env()``
     so the mixer IP and audio device come from environment variables — no code
-    edits needed). The local Mistral 7B can be attached by passing an LLMClient
-    to the SuggestionGenerator; omitted here so the app still runs without it.
+    edits needed). The local Mistral 7B is attached automatically when
+    SOUND_ADVISOR_LLM_BACKEND selects one (ollama/lmstudio); otherwise the app
+    runs on Agent 4's built-in basic alerts.
 
     Run live with:
         uvicorn src.web_server:build_default_app --factory
     """
     from src.audio_analysis import AudioAnalysisEngine
     from src.detection import DetectionEngine
+    from src.event_log import JsonlFileSink, SessionLogger
+    from src.llm_client import build_llm_client
     from src.mixer_state import MixerStateAgent, UdpOscTransport
     from src.pacing import SuggestionPacingAgent
+    from src.recording_analysis import RecordingAnalysisEngine
     from src.suggestion import SuggestionGenerator
     from src.system_loop import SoundDeviceAudioSource
+    from src.x32_connection import UdpOscChannel
 
     cfg = config or ServerConfig.from_env()
 
+    # Persistent network settings (spec NETWORKING INTERFACE). Loading creates
+    # config.json from the X32 factory defaults on first run. These saved values
+    # drive the master connection (Connect button / Test / Settings window); the
+    # background mixer poller stays on the env-driven ServerConfig.
+    network_store = NetworkConfigStore()
+    net = network_store.load()
+
     profile_agent = ContextProfileAgent(cfg.profile_dir)
-    generator = SuggestionGenerator()  # attach an LLMClient for instructor text
+    # Local Mistral 7B (Ollama/LM Studio) when configured via env, else None
+    # -> SuggestionGenerator falls back to basic alerts. Failsafe either way.
+    generator = SuggestionGenerator(build_llm_client())
     interaction_agent = UserInteractionAgent(generator, profile_agent)
+    # Append-only session log for post-service review (spec LOGGING SYSTEM).
+    event_logger = SessionLogger(
+        JsonlFileSink(Path(cfg.log_dir) / "session.jsonl")
+    )
+
+    # Optional recorder/stream feed analysis (spec RECORDING ANALYSIS MODULE):
+    # only enabled when a recording input device is configured.
+    recording_source = None
+    recording_engine = None
+    if cfg.recording_device is not None:
+        recording_source = SoundDeviceAudioSource(
+            sample_rate=cfg.sample_rate,
+            channels=cfg.audio_channels,
+            device=cfg.recording_device,
+        )
+        recording_engine = RecordingAnalysisEngine.default()
 
     orchestrator = SystemLoopOrchestrator(
         audio_source=SoundDeviceAudioSource(
@@ -414,9 +879,24 @@ def build_default_app(config: Optional[ServerConfig] = None) -> FastAPI:
         pacing_agent=SuggestionPacingAgent(),
         suggestion_generator=generator,
         interaction_agent=interaction_agent,
+        event_logger=event_logger,
+        recording_source=recording_source,
+        recording_analysis_engine=recording_engine,
     )
+    # Master connection manager for the Connect button: builds a real UDP/OSC
+    # channel on demand, honouring the configured reply timeout.
+    x32_connection = X32ConnectionManager(
+        channel_factory=lambda ip, port: UdpOscChannel(ip, port),
+        info_timeout=net.timeout_s,
+    )
+
     return create_app(
         orchestrator=orchestrator,
         profile_agent=profile_agent,
         interaction_agent=interaction_agent,
+        event_logger=event_logger,
+        x32_connection=x32_connection,
+        default_x32_ip=cfg.x32_ip,
+        default_x32_port=cfg.x32_port,
+        network_store=network_store,
     )

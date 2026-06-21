@@ -1,0 +1,31 @@
+# AI Sound Advisor — Python dependencies
+# Pinned to the versions verified working on Python 3.10.
+#
+# Install into Python 3.10 with:
+#     py -3.10 -m pip install -r requirements.txt
+#
+# ---------------------------------------------------------------------------
+# Core — required to run the dashboard (run_dashboard.py) and the web server.
+# ---------------------------------------------------------------------------
+fastapi==0.136.3
+uvicorn==0.49.0
+websockets==16.0          # real-time WebSocket push (uvicorn[standard])
+pydantic==2.13.4
+numpy==2.2.6
+python-osc==1.10.2        # OSC/UDP communication with the Behringer X32
+
+# ---------------------------------------------------------------------------
+# Real-hardware extras — only needed for live mic capture / full audio
+# analysis (build_default_app, run_real_test.bat). The hardware-free demo
+# (run_dashboard.py) does NOT need these; they are imported lazily.
+# ---------------------------------------------------------------------------
+sounddevice==0.5.5        # real microphone / interface capture
+# librosa                 # FFT / spectral analysis (uncomment + install for live audio)
+# pyloudnorm              # LUFS loudness measurement
+# scipy                   # signal processing
+
+# ---------------------------------------------------------------------------
+# Test / dev
+# ---------------------------------------------------------------------------
+pytest==9.0.3
+httpx==0.28.1             # FastAPI TestClient

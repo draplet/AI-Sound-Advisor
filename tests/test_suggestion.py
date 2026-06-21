@@ -69,9 +69,11 @@ def make_issue(
     channel="Lead Vocal",
     priority=Priority.HIGH,
     confidence=0.9,
+    channel_index=None,
 ):
     return Issue(
-        issue=issue_type, channel=channel, priority=priority, confidence=confidence
+        issue=issue_type, channel=channel, channel_index=channel_index,
+        priority=priority, confidence=confidence,
     )
 
 
@@ -84,15 +86,17 @@ class TestSuggestionRendering:
     def test_render_matches_spec_output_format(self):
         suggestion = Suggestion(
             issue=IssueType.VOCAL_MASKING,
-            channel="Channel 3",
+            channel="Lead Vocal",
+            channel_index=3,
             priority=Priority.HIGH,
             confidence=0.9,
-            message="Channel 3 vocals are slightly buried under music",
+            message="vocals are slightly buried under music",
             source=SuggestionSource.LLM,
         )
         rendered = suggestion.render()
+        # Each suggestion leads with "Channel ##, Label", then the message.
         assert rendered == (
-            "🔴 Channel 3 vocals are slightly buried under music\n"
+            "🔴 Channel 03, Lead Vocal — vocals are slightly buried under music\n"
             "Confidence: High"
         )
 
@@ -159,6 +163,25 @@ class TestLlmGeneration:
         assert suggestion.priority == Priority.HIGH
         assert suggestion.confidence == 0.9
 
+    def test_generate_carries_channel_index_and_builds_channel_tag(self):
+        """A channel-specific issue leads with 'Channel ##, Label'."""
+        generator = SuggestionGenerator(FakeLLMClient())
+        suggestion = generator.generate(
+            make_issue(channel="Lead Vocal", channel_index=3)
+        )
+        assert suggestion.channel_index == 3
+        assert suggestion.channel_ref == "Channel 03, Lead Vocal"
+        assert suggestion.render().startswith("🔴 Channel 03, Lead Vocal — ")
+
+    def test_main_mix_issue_tag_is_main_mix(self):
+        """Mix-wide issues (no channel) lead with 'Main Mix'."""
+        generator = SuggestionGenerator(FakeLLMClient())
+        suggestion = generator.generate(
+            make_issue(issue_type=IssueType.CLIPPING, channel=None)
+        )
+        assert suggestion.channel_index is None
+        assert suggestion.channel_ref == "Main Mix"
+
     def test_prompt_includes_channel_label_and_issue(self):
         """Spec: 'Use channel labels when available.'"""
         client = FakeLLMClient()
@@ -208,6 +231,26 @@ class TestFallback:
 
         assert suggestion.source == SuggestionSource.FALLBACK
         assert suggestion.message != ""
+
+    def test_placeholder_llm_response_falls_back(self):
+        """A small model emitting an unfilled template like
+        '[Insert Channel Label Here]' must be rejected for the concrete
+        deterministic message (which names the real target)."""
+        bad = "Adjust the fader on the [Insert Channel Label Here] to 60%."
+        generator = SuggestionGenerator(FakeLLMClient(response=bad))
+
+        suggestion = generator.generate(make_issue(channel="Lead Vocal"))
+
+        assert suggestion.source == SuggestionSource.FALLBACK
+        assert "[" not in suggestion.message and "]" not in suggestion.message
+        assert "Lead Vocal" in suggestion.message
+
+    def test_chat_keeps_brackets(self):
+        """Chat does not reject brackets (they can be legitimate there)."""
+        generator = SuggestionGenerator(FakeLLMClient(response="Use a [high-pass] filter."))
+        reply, source = generator.chat("how do I clean up rumble?")
+        assert source == SuggestionSource.LLM
+        assert "[high-pass]" in reply
 
     def test_fallback_uses_channel_label_when_present(self):
         generator = SuggestionGenerator()
@@ -291,3 +334,69 @@ class TestGenerateAll:
     def test_generate_all_on_empty_list_returns_empty(self):
         generator = SuggestionGenerator(FakeLLMClient())
         assert generator.generate_all([]) == []
+
+
+# ===========================================================================
+# SECTION — Conversational chat (AI Prompt -> real LLM chat)
+# ===========================================================================
+
+class TestChat:
+
+    def test_chat_uses_the_llm_when_available(self):
+        client = FakeLLMClient(response="Try trimming 300 Hz on the vocal.")
+        generator = SuggestionGenerator(client)
+        reply, source = generator.chat("Why does it sound muddy?")
+        assert reply == "Try trimming 300 Hz on the vocal."
+        assert source == SuggestionSource.LLM
+        # The operator's question is in the prompt sent to the model.
+        assert "Why does it sound muddy?" in client.last_prompt
+
+    def test_chat_prompt_includes_history_and_mix_context(self):
+        client = FakeLLMClient(response="ok")
+        generator = SuggestionGenerator(client)
+        generator.chat(
+            "And now?",
+            history=[{"role": "user", "content": "Is the vocal too quiet?"},
+                     {"role": "assistant", "content": "A little — try +2 dB."}],
+            mix_summary="active issues: vocal_masking on Lead Vocal",
+        )
+        prompt = client.last_prompt
+        assert "vocal_masking on Lead Vocal" in prompt
+        assert "Is the vocal too quiet?" in prompt
+        assert "And now?" in prompt
+
+    def test_chat_falls_back_without_a_model(self):
+        generator = SuggestionGenerator()  # no client
+        reply, source = generator.chat("How do I fix feedback?")
+        assert source == SuggestionSource.FALLBACK
+        assert reply                                  # a helpful, non-empty message
+
+    def test_chat_falls_back_when_the_model_errors(self):
+        generator = SuggestionGenerator(RaisingLLMClient())
+        reply, source = generator.chat("Anything?")
+        assert source == SuggestionSource.FALLBACK
+        assert reply
+
+
+# ===========================================================================
+# SECTION — Channel wording: a channel-less issue reads as the main mix
+# ===========================================================================
+
+class TestChannelWording:
+
+    def test_channel_less_issue_refers_to_the_main_mix(self):
+        generator = SuggestionGenerator()  # fallback templates
+        suggestion = generator.generate(
+            make_issue(issue_type=IssueType.CLIPPING, channel=None,
+                       priority=Priority.HIGH, confidence=0.9)
+        )
+        text = suggestion.message.lower()
+        assert "main mix" in text
+        assert "the channel" not in text
+
+    def test_channel_issue_still_uses_the_channel_label(self):
+        generator = SuggestionGenerator()
+        suggestion = generator.generate(
+            make_issue(issue_type=IssueType.VOCAL_MASKING, channel="Lead Vocal")
+        )
+        assert "Lead Vocal" in suggestion.message

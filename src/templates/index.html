@@ -75,6 +75,15 @@
   .suggestion.prio-low { border-left-color: var(--blue); }
   .suggestion .top { display: flex; justify-content: space-between; align-items: center; }
   .suggestion .msg { font-size: 20px; margin: 6px 0 10px; }
+  .suggestion .msg .ch-ref { font-weight: 700; color: #bcd3ff; }
+  .chan-row {
+    display: flex; align-items: baseline; gap: 12px; padding: 8px 4px;
+    border-bottom: 1px solid var(--border); font-size: 17px;
+  }
+  .chan-row .chan-id { font-weight: 700; color: #bcd3ff; min-width: 52px; }
+  .chan-row .chan-name { flex: 1; }
+  .chan-row .chan-db { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .chan-note { font-size: 13px; color: var(--muted); margin: 8px 4px 0; }
   .suggestion .meta { font-size: 15px; color: var(--muted); }
   .badge {
     font-size: 13px; padding: 3px 10px; border-radius: 999px;
@@ -99,20 +108,113 @@
   }
   .seg button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-  /* ---- Prompt panel ---- */
-  #prompt-panel form { display: flex; gap: 10px; }
-  #prompt-input {
+  /* ---- Tabs (Suggestions / Broadcast) ---- */
+  .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+  .tab {
+    background: #1b2130; color: var(--muted);
+    border: 1px solid var(--panel-edge); border-radius: 8px;
+    padding: 8px 16px; cursor: pointer; font-size: 16px;
+  }
+  .tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tab .count { font-size: 13px; opacity: 0.85; }
+
+  /* ---- Channel + meta chips ---- */
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .chip {
+    font-size: 13px; padding: 3px 10px; border-radius: 999px;
+    background: #20303f; color: var(--muted); border: 1px solid var(--panel-edge);
+    text-transform: none;
+  }
+  .chip.channel { background: #1d2c44; color: #bcd3ff; border-color: #2b4a7a; }
+
+  /* ---- Per-card detail (More / Tell me how, embedded in the card) ---- */
+  .card-detail {
+    margin-top: 10px; padding: 12px 14px; border-radius: 8px;
+    background: #11203a; border: 1px solid #2b4a7a;
+    color: #e8f0ff; font-size: 16px; line-height: 1.5; white-space: pre-wrap;
+  }
+  .actions button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  /* ---- Chat panel ---- */
+  #chat-log { max-height: 320px; overflow-y: auto; margin-bottom: 12px; display: flex; flex-direction: column; }
+  .chat-msg {
+    padding: 10px 14px; border-radius: 10px; margin-bottom: 8px;
+    font-size: 16px; max-width: 90%; white-space: pre-wrap;
+  }
+  .chat-msg.user { background: var(--accent); color: #fff; align-self: flex-end; }
+  .chat-msg.bot { background: #1b2130; border: 1px solid var(--panel-edge); align-self: flex-start; }
+  .chat-msg.bot.fallback { border-color: #5a4a1f; }
+  .chat-empty { color: var(--muted); font-size: 15px; }
+  #chat-panel form { display: flex; gap: 10px; }
+  #chat-input {
     flex: 1; background: #1b2130; color: var(--text);
     border: 1px solid var(--panel-edge); border-radius: 8px;
     padding: 12px; font-size: 16px;
   }
-  #prompt-panel button {
+  #chat-panel button {
     background: var(--accent); color: #fff; border: none; border-radius: 8px;
     padding: 12px 18px; cursor: pointer; font-size: 16px;
   }
-  #prompt-ack { color: var(--green); margin-top: 10px; min-height: 22px; font-size: 15px; }
   .metrics { font-size: 14px; color: var(--muted); margin-top: 6px; }
   #warnings { color: var(--yellow); font-size: 15px; margin-top: 12px; }
+
+  /* ---- Status label (shared by the Settings modal: test / connection) ---- */
+  .net-status {
+    font-size: 16px; padding: 10px 12px; border-radius: 8px;
+    background: #1b2130; border-left: 6px solid var(--muted);
+    color: var(--text); white-space: pre-wrap;
+  }
+  .net-status.ok { border-left-color: var(--green); }
+  .net-status.bad { border-left-color: var(--red); color: var(--yellow); }
+
+  /* ---- Settings window (header gear icon + modal) ---- */
+  .gear-btn {
+    background: #2a3342; color: var(--text); border: 1px solid var(--panel-edge);
+    border-radius: 8px; padding: 4px 10px; font-size: 18px; cursor: pointer;
+    line-height: 1; margin-left: 8px;
+  }
+  .gear-btn:hover { background: #333d4f; }
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: none; align-items: center; justify-content: center; z-index: 50;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--panel); border: 1px solid var(--panel-edge);
+    border-radius: 12px; padding: 22px; width: min(440px, 92vw);
+    max-height: 90vh; overflow-y: auto;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  }
+  .modal h2 { margin: 0 0 16px; }
+  .modal h3.modal-section {
+    margin: 22px 0 12px; padding-top: 16px; font-size: 15px;
+    border-top: 1px solid var(--panel-edge); color: var(--muted);
+  }
+  .modal h3.modal-section:first-of-type { margin-top: 4px; border-top: none; padding-top: 0; }
+  .modal-wide-btn {
+    width: 100%; background: var(--accent); color: #fff; border: none;
+    border-radius: 8px; padding: 10px; cursor: pointer; font-size: 15px;
+  }
+  .modal .field { margin-bottom: 12px; }
+  .modal .field label {
+    display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px;
+  }
+  .modal .field input {
+    width: 100%; box-sizing: border-box; background: #1b2130; color: var(--text);
+    border: 1px solid var(--panel-edge); border-radius: 8px;
+    padding: 9px 11px; font-size: 15px;
+  }
+  .modal-actions { display: flex; gap: 8px; margin: 16px 0 12px; }
+  .modal-actions button {
+    flex: 1; border: none; border-radius: 8px; padding: 10px; cursor: pointer;
+    font-size: 15px; color: #fff;
+  }
+  .modal-actions button:disabled { opacity: 0.5; cursor: default; }
+  #net-save-btn { background: var(--accent); }
+  #net-test-btn { background: #2a7d46; }
+  #net-close-btn { background: #2a3342; }
+  #x32-connect-btn { background: var(--accent); }
+  #x32-disconnect-btn { background: #2a3342; }
 </style>
 </head>
 <body>
@@ -121,22 +223,92 @@
     <div class="status-indicators">
       <div class="indicator">X32 <span id="x32-dot" class="dot"></span></div>
       <div class="indicator">Audio Input <span id="audio-dot" class="dot"></span></div>
+      <div class="indicator">AI <span id="ai-dot" class="dot"></span></div>
       <div class="indicator">Link <span id="link-dot" class="dot"></span></div>
+      <button id="net-settings-btn" class="gear-btn" type="button"
+              title="Settings" aria-label="Settings">⚙</button>
     </div>
   </header>
 
   <main>
-    <!-- ===== Suggestions Panel ===== -->
+    <!-- ===== Suggestions / Broadcast Panel (tab-split) ===== -->
     <section class="panel" id="suggestions-panel">
-      <h2>Suggestions</h2>
-      <div id="suggestions-list">
-        <div class="all-clear">✅ Your mix is sounding good</div>
+      <div class="tabs" id="main-tabs">
+        <button class="tab active" data-tab="suggestions">
+          Suggestions <span class="count" id="tab-sugg-count"></span>
+        </button>
+        <button class="tab" data-tab="broadcast">
+          Broadcast <span class="count" id="tab-bcast-count"></span>
+        </button>
+        <button class="tab" data-tab="channels">
+          Channels <span class="count" id="tab-chan-count"></span>
+        </button>
+      </div>
+      <div id="suggestions-list" class="tab-content">
+        <div class="all-clear">Waiting for communication…</div>
+      </div>
+      <div id="broadcast-list" class="tab-content" style="display:none;">
+        <div class="metrics">Not monitoring a recording feed.</div>
+      </div>
+      <div id="channels-list" class="tab-content" style="display:none;">
+        <div class="metrics">Connect the X32 to see active channels.</div>
       </div>
       <div id="warnings"></div>
     </section>
 
     <!-- ===== Controls + Prompt ===== -->
     <div>
+      <!-- ===== Settings window (opened by the gear icon in the header) ===== -->
+      <div id="net-modal" class="modal-overlay">
+        <div class="modal" role="dialog" aria-modal="true" aria-label="Settings">
+          <h2>Settings</h2>
+
+          <h3 class="modal-section">X32 Network</h3>
+          <div class="field">
+            <label for="net-ip">IP Address</label>
+            <input id="net-ip" type="text" inputmode="decimal" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="net-subnet">Subnet Mask</label>
+            <input id="net-subnet" type="text" inputmode="decimal" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="net-gateway">Gateway</label>
+            <input id="net-gateway" type="text" inputmode="decimal" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="net-port">UDP Port</label>
+            <input id="net-port" type="number" min="1" max="65535" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="net-timeout">Timeout (ms)</label>
+            <input id="net-timeout" type="number" min="1" autocomplete="off" />
+          </div>
+          <div class="modal-actions">
+            <button id="net-save-btn" type="button">Save Settings</button>
+            <button id="net-test-btn" type="button">Test Connection</button>
+          </div>
+          <div id="net-modal-status" class="net-status">Idle</div>
+
+          <h3 class="modal-section">Connection</h3>
+          <div class="modal-actions">
+            <button id="x32-connect-btn" type="button">Connect</button>
+            <button id="x32-disconnect-btn" type="button">Disconnect</button>
+          </div>
+          <div id="x32-conn-status" class="net-status">Not connected</div>
+
+          <h3 class="modal-section">Profile</h3>
+          <button id="save-profile-btn" class="modal-wide-btn" type="button">
+            Review &amp; save profile
+          </button>
+          <div id="profile-summary" class="metrics" style="margin-top:10px;"></div>
+
+          <div class="modal-actions" style="margin-top:18px;">
+            <button id="net-close-btn" type="button">Close</button>
+          </div>
+        </div>
+      </div>
+
       <section class="panel" id="controls-panel" style="margin-bottom:20px;">
         <h2>Controls</h2>
         <div class="control-group">
@@ -155,17 +327,31 @@
             <button data-loud="energetic">Energetic</button>
           </div>
         </div>
+        <div class="control-group">
+          <label>Focus Mode</label>
+          <label class="switch">
+            <input type="checkbox" id="focus-toggle" />
+            <span>Show only the most urgent issue</span>
+          </label>
+        </div>
+        <div class="control-group">
+          <label>Calibration</label>
+          <button id="calibrate-btn" type="button">Capture good mix</button>
+          <span id="calibrate-status" class="metrics"></span>
+        </div>
         <div class="metrics" id="metrics-line"></div>
       </section>
 
-      <section class="panel" id="prompt-panel">
-        <h2>AI Prompt</h2>
-        <form id="prompt-form">
-          <input id="prompt-input" type="text" autocomplete="off"
-                 placeholder='e.g. "The piano is always loud"' />
+      <section class="panel" id="chat-panel">
+        <h2>AI Chat</h2>
+        <div id="chat-log">
+          <div class="chat-empty">Ask the AI coach about your mix…</div>
+        </div>
+        <form id="chat-form">
+          <input id="chat-input" type="text" autocomplete="off"
+                 placeholder='e.g. "Why does the vocal sound buried?"' />
           <button type="submit">Send</button>
         </form>
-        <div id="prompt-ack"></div>
       </section>
     </div>
   </main>
@@ -186,31 +372,86 @@
     el.className = "dot " + (ok ? "ok" : "bad");
   }
 
+  function escapeHtml(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;",
+               '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  // Shared client state.
+  var lastState = null;                 // most recent server frame (for re-render)
+  var detailState = {};                 // suggestion key -> { mode, text } (open card detail)
+  var activeTab = "suggestions";        // which panel tab is showing
+  var chatHistory = [];                 // [{ role, content, fallback? }]
+
+  function suggKey(s) { return s.issue + "|" + (s.channel || ""); }
+
   function renderSuggestions(state) {
     var list = document.getElementById("suggestions-list");
     var suggestions = state.suggestions || [];
+    var count = document.getElementById("tab-sugg-count");
+    if (count) count.textContent = suggestions.length ? "(" + suggestions.length + ")" : "";
+
     if (!suggestions.length) {
-      var msg = state.all_clear ? "✅ Your mix is sounding good" : "Monitoring…";
-      list.innerHTML = '<div class="all-clear">' + msg + "</div>";
+      // "Your mix is sounding good" only when a good mix is actually detected
+      // (all_clear). Otherwise show the server's status message (e.g. waiting
+      // for communication / audio lost), falling back to a neutral monitoring
+      // note when there is none.
+      var msg;
+      if (state.all_clear) {
+        msg = "✅ Your mix is sounding good";
+      } else if (state.status_message) {
+        msg = state.status_message;
+      } else {
+        msg = "Monitoring…";
+      }
+      list.innerHTML = '<div class="all-clear">' + escapeHtml(msg) + "</div>";
       return;
     }
+
+    // Forget open detail for issues that have cleared.
+    var present = {};
+    suggestions.forEach(function (s) { present[suggKey(s)] = true; });
+    Object.keys(detailState).forEach(function (k) {
+      if (!present[k]) delete detailState[k];
+    });
+
     list.innerHTML = suggestions.map(function (s) {
       var icon = s.priority_icon || "🔵";
       var label = s.confidence_label
         ? s.confidence_label.charAt(0).toUpperCase() + s.confidence_label.slice(1)
         : confLabel(s.confidence);
-      var where = s.channel ? " — " + s.channel : "";
-      var channelAttr = s.channel === null || s.channel === undefined ? "" : s.channel;
+      var key = suggKey(s);
+      var channelAttr = (s.channel === null || s.channel === undefined) ? "" : s.channel;
+      // Channel chip: the labelled channel where it applies, else the main mix.
+      var channelLabel = channelAttr ? channelAttr : "Main mix";
+      var open = detailState[key];
+      var detailHtml = open
+        ? '<div class="card-detail">' + escapeHtml(open.text) + "</div>"
+        : "";
+      var moreActive = open && open.mode === "more" ? " active" : "";
+      var howActive = open && open.mode === "tellmehow" ? " active" : "";
+      var chAttr = escapeHtml(channelAttr);
+      // Channel tag leading every message: "Channel 03, Lead Vocal" or "Main Mix".
+      var ref = s.channel_ref || channelLabel;
+      var refHtml = '<span class="ch-ref">' + escapeHtml(ref) + " — </span>";
       return (
         '<div class="suggestion prio-' + s.priority + '">' +
           '<div class="top">' +
-            '<span class="badge">' + s.priority + where + "</span>" +
+            '<span class="chips">' +
+              '<span class="badge">' + s.priority + "</span>" +
+            "</span>" +
             '<span class="badge">Confidence: ' + label + "</span>" +
           "</div>" +
-          '<div class="msg">' + icon + " " + (s.message || s.issue) + "</div>" +
+          '<div class="msg">' + icon + " " + refHtml + escapeHtml(s.message || s.issue) + "</div>" +
           '<div class="actions">' +
-            '<button data-ignore="' + s.issue + '" data-channel="' + channelAttr + '">Ignore (3 min)</button>' +
+            '<button class="act' + moreActive + '" data-act="more" data-issue="' + s.issue + '" data-channel="' + chAttr + '">More</button>' +
+            '<button class="act' + howActive + '" data-act="tellmehow" data-issue="' + s.issue + '" data-channel="' + chAttr + '">Tell me how</button>' +
+            '<button data-act="mark-normal" data-issue="' + s.issue + '" data-channel="' + chAttr + '">Mark normal</button>' +
+            '<button data-ignore="' + s.issue + '" data-channel="' + chAttr + '">Ignore (3 min)</button>' +
           "</div>" +
+          detailHtml +
         "</div>"
       );
     }).join("");
@@ -225,6 +466,38 @@
         });
       });
     });
+
+    // Wire the More / Tell me how / Mark normal buttons (Agent 7 actions).
+    Array.prototype.forEach.call(list.querySelectorAll("[data-act]"), function (btn) {
+      btn.addEventListener("click", function () {
+        var ch = btn.getAttribute("data-channel");
+        var act = btn.getAttribute("data-act");
+        var issue = btn.getAttribute("data-issue");
+        var key = issue + "|" + ch;
+        var body = { issue: issue, channel: ch === "" ? null : ch };
+
+        if (act === "mark-normal") {
+          post("/api/mark-normal", body);
+          return;
+        }
+        // More / Tell me how toggle an embedded detail inside this card.
+        if (detailState[key] && detailState[key].mode === act) {
+          delete detailState[key];                 // second click closes it
+          renderSuggestions(lastState || state);
+          return;
+        }
+        var url = act === "more" ? "/api/more" : "/api/tellmehow";
+        post(url, body).then(function (r) { return r.json(); })
+          .then(function (res) {
+            detailState[key] = { mode: act, text: res.detail || res.message || "" };
+            renderSuggestions(lastState || state);
+          })
+          .catch(function () {
+            detailState[key] = { mode: act, text: "Could not load that." };
+            renderSuggestions(lastState || state);
+          });
+      });
+    });
   }
 
   function renderControls(state) {
@@ -234,6 +507,10 @@
     Array.prototype.forEach.call(document.querySelectorAll("#loudness-seg button"), function (b) {
       b.classList.toggle("active", b.getAttribute("data-loud") === state.loudness_mode);
     });
+    var cal = document.getElementById("calibrate-status");
+    if (cal) cal.textContent = state.calibrated ? "✅ Calibrated" : "Not calibrated";
+    var focus = document.getElementById("focus-toggle");
+    if (focus && document.activeElement !== focus) focus.checked = !!state.focus_mode;
   }
 
   function renderMetrics(state) {
@@ -251,11 +528,49 @@
     warn.textContent = (state.warnings || []).join("  ·  ");
   }
 
+  function renderBroadcast(state) {
+    var body = document.getElementById("broadcast-list");
+    if (!body) return;
+    var count = document.getElementById("tab-bcast-count");
+    var rec = state.recording;
+    if (!rec) {
+      body.innerHTML = '<div class="metrics">Not monitoring a recording feed.</div>';
+      if (count) count.textContent = "";
+      return;
+    }
+    if (!rec.available) {
+      body.innerHTML = '<div class="metrics">⚠️ Recording/stream feed unavailable.</div>';
+      if (count) count.textContent = "";
+      return;
+    }
+    var findings = rec.findings || [];
+    if (count) count.textContent = findings.length ? "(" + findings.length + ")" : "";
+    if (!findings.length) {
+      body.innerHTML = '<div class="all-clear">✅ Broadcast matches the room</div>';
+      return;
+    }
+    body.innerHTML = findings.map(function (f) {
+      return (
+        '<div class="suggestion prio-' + f.severity + '">' +
+          '<div class="top"><span class="chips">' +
+            '<span class="badge">' + f.severity + "</span>" +
+            '<span class="chip channel">Recording feed</span>' +
+          "</span></div>" +
+          '<div class="msg">' + escapeHtml(f.message || f.kind) + "</div>" +
+        "</div>"
+      );
+    }).join("");
+  }
+
   function render(state) {
     if (!state) return;
+    lastState = state;
     setDot("x32-dot", state.mixer_connected);
     setDot("audio-dot", state.audio_ok);
+    // AI dot: lit when a local LLM is reachable; off means basic-alerts mode.
+    setDot("ai-dot", !!state.llm_available);
     renderSuggestions(state);
+    renderBroadcast(state);
     renderControls(state);
     renderMetrics(state);
   }
@@ -267,6 +582,65 @@
       body: JSON.stringify(body)
     });
   }
+
+  // ---- Tab switching (Suggestions / Broadcast / Channels) ----
+  function switchTab(tab) {
+    activeTab = tab;
+    Array.prototype.forEach.call(document.querySelectorAll("#main-tabs .tab"), function (b) {
+      b.classList.toggle("active", b.getAttribute("data-tab") === tab);
+    });
+    document.getElementById("suggestions-list").style.display =
+      tab === "suggestions" ? "" : "none";
+    document.getElementById("broadcast-list").style.display =
+      tab === "broadcast" ? "" : "none";
+    document.getElementById("channels-list").style.display =
+      tab === "channels" ? "" : "none";
+    if (tab === "channels") pollActiveChannels();   // refresh on view
+  }
+  Array.prototype.forEach.call(document.querySelectorAll("#main-tabs .tab"), function (b) {
+    b.addEventListener("click", function () { switchTab(b.getAttribute("data-tab")); });
+  });
+
+  // ---- Active Channels (in-use X32 faders, refreshed ~every 20s) ----
+  function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+
+  function renderActiveChannels(snap) {
+    var body = document.getElementById("channels-list");
+    var count = document.getElementById("tab-chan-count");
+    if (!snap || !snap.available) {
+      if (count) count.textContent = "";
+      var msg = (snap && snap.warning) ? snap.warning
+        : "Connect the X32 to see active channels.";
+      body.innerHTML = '<div class="metrics">' + escapeHtml(msg) + "</div>";
+      return;
+    }
+    var chans = snap.channels || [];
+    if (count) count.textContent = chans.length ? "(" + chans.length + ")" : "";
+    if (!chans.length) {
+      body.innerHTML = '<div class="metrics">No active channels above '
+        + snap.threshold_db + " dB.</div>";
+      return;
+    }
+    body.innerHTML = chans.map(function (c) {
+      var nm = (c.name && c.name.trim()) ? c.name : ("Channel " + c.index);
+      return '<div class="chan-row">' +
+        '<span class="chan-id">Ch ' + pad2(c.index) + "</span>" +
+        '<span class="chan-name">' + escapeHtml(nm) + "</span>" +
+        '<span class="chan-db">' + c.fader_db.toFixed(1) + " dB</span>" +
+      "</div>";
+    }).join("") +
+    '<div class="chan-note">Unmuted channels with fader above '
+      + snap.threshold_db + " dB. Updates ~every minute.</div>";
+  }
+
+  function pollActiveChannels() {
+    fetch("/api/x32/active-channels").then(function (r) { return r.json(); })
+      .then(renderActiveChannels).catch(function () {});
+  }
+  pollActiveChannels();
+  // Poll cheaply every 15s; the server only re-scans the console every ~30s and
+  // serves the cached list in between.
+  setInterval(pollActiveChannels, 15000);
 
   // ---- Controls wiring ----
   document.querySelectorAll("#mode-seg button").forEach(function (b) {
@@ -280,20 +654,209 @@
     });
   });
 
-  // ---- Prompt wiring ----
-  document.getElementById("prompt-form").addEventListener("submit", function (e) {
-    e.preventDefault();
-    var input = document.getElementById("prompt-input");
-    var text = input.value.trim();
-    if (!text) return;
-    post("/api/prompt", { text: text }).then(function (r) { return r.json(); })
-      .then(function (res) {
-        document.getElementById("prompt-ack").textContent = res.message || "Got it.";
-        input.value = "";
+  // ---- Profile review & save wiring (end-of-event flow) ----
+  document.getElementById("save-profile-btn").addEventListener("click", function () {
+    var box = document.getElementById("profile-summary");
+    fetch("/api/profile/summary").then(function (r) { return r.json(); })
+      .then(function (sum) {
+        var changes = sum.changes || [];
+        if (!changes.length) {
+          box.textContent = "No new changes to save.";
+          return;
+        }
+        // Show the learned changes, then persist them.
+        box.textContent = "Saving: " + changes.join("  ·  ");
+        return post("/api/profile/save", {}).then(function (r) { return r.json(); })
+          .then(function (res) { box.textContent = res.message || "Saved."; });
       })
       .catch(function () {
-        document.getElementById("prompt-ack").textContent = "Could not send.";
+        box.textContent = "Could not save the profile.";
       });
+  });
+
+  // ---- Focus Mode wiring ----
+  document.getElementById("focus-toggle").addEventListener("change", function () {
+    post("/api/focus", { enabled: this.checked });
+  });
+
+  // ---- Calibration wiring ----
+  document.getElementById("calibrate-btn").addEventListener("click", function () {
+    post("/api/calibrate", {}).then(function (r) { return r.json(); })
+      .then(function (res) {
+        document.getElementById("calibrate-status").textContent =
+          res.message || (res.ok ? "✅ Calibrated" : "Could not calibrate.");
+      })
+      .catch(function () {
+        document.getElementById("calibrate-status").textContent = "Could not calibrate.";
+      });
+  });
+
+  // ---- AI chat wiring (multi-turn conversation with the LLM) ----
+  function renderChatLog() {
+    var log = document.getElementById("chat-log");
+    if (!chatHistory.length) {
+      log.innerHTML = '<div class="chat-empty">Ask the AI coach about your mix…</div>';
+      return;
+    }
+    log.innerHTML = chatHistory.map(function (t) {
+      var cls = t.role === "user" ? "user" : ("bot" + (t.fallback ? " fallback" : ""));
+      return '<div class="chat-msg ' + cls + '">' + escapeHtml(t.content) + "</div>";
+    }).join("");
+    log.scrollTop = log.scrollHeight;
+  }
+
+  document.getElementById("chat-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var input = document.getElementById("chat-input");
+    var text = input.value.trim();
+    if (!text) return;
+    // Send the conversation so far (before this turn) for multi-turn context.
+    var prior = chatHistory.map(function (t) {
+      return { role: t.role, content: t.content };
+    });
+    chatHistory.push({ role: "user", content: text });
+    chatHistory.push({ role: "assistant", content: "…", pending: true });
+    renderChatLog();
+    input.value = "";
+
+    post("/api/chat", { message: text, history: prior })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        chatHistory.pop();                          // drop the pending placeholder
+        chatHistory.push({
+          role: "assistant",
+          content: res.reply || "(no reply)",
+          fallback: res.source !== "llm"
+        });
+        renderChatLog();
+      })
+      .catch(function () {
+        chatHistory.pop();
+        chatHistory.push({ role: "assistant",
+                           content: "Could not reach the AI.", fallback: true });
+        renderChatLog();
+      });
+  });
+
+  // ---- X32 master connection (Connect / status label / Disconnect) ----
+  function renderConnState(s) {
+    var box = document.getElementById("x32-conn-status");
+    if (!box) return;
+    box.textContent = s.status_label || (s.connected ? "Connected" : "Not connected");
+    box.className = "net-status " + (s.connected ? "ok" : (s.warning ? "bad" : ""));
+    document.getElementById("x32-connect-btn").disabled = !!s.connected;
+    document.getElementById("x32-disconnect-btn").disabled = !s.connected;
+  }
+
+  function refreshConnStatus() {
+    fetch("/api/x32/status").then(function (r) { return r.json(); })
+      .then(function (s) {
+        // Prefill the network fields with the server's saved defaults (once).
+        var ipEl = document.getElementById("net-ip");
+        var portEl = document.getElementById("net-port");
+        if (ipEl && !ipEl.value && s.default_ip) ipEl.value = s.ip || s.default_ip;
+        if (portEl && !portEl.value && s.default_port)
+          portEl.value = s.port || s.default_port;
+        renderConnState(s);
+      })
+      .catch(function () {});
+  }
+
+  document.getElementById("x32-connect-btn").addEventListener("click", function () {
+    var box = document.getElementById("x32-conn-status");
+    box.className = "net-status";
+    box.textContent = "Connecting…";
+    var ip = document.getElementById("net-ip").value.trim();
+    var portRaw = document.getElementById("net-port").value.trim();
+    var port = portRaw === "" ? null : parseInt(portRaw, 10);
+    post("/api/x32/connect", { ip: ip || null, port: port })
+      .then(function (r) { return r.json(); })
+      .then(renderConnState)
+      .catch(function () {
+        renderConnState({ connected: false, warning: true,
+                          status_label: "Could not connect to the X32." });
+      });
+  });
+
+  document.getElementById("x32-disconnect-btn").addEventListener("click", function () {
+    post("/api/x32/disconnect", {})
+      .then(function (r) { return r.json(); })
+      .then(renderConnState)
+      .catch(function () {});
+  });
+
+  refreshConnStatus();
+  // Poll the connection status so a dropped /xremote keepalive is reflected.
+  setInterval(refreshConnStatus, 3000);
+
+  // ---- Network Settings window (gear icon: load / save / test) ----
+  var netModal = document.getElementById("net-modal");
+
+  function setNetModalStatus(text, kind) {
+    var box = document.getElementById("net-modal-status");
+    if (!box) return;
+    box.textContent = text;
+    box.className = "net-status " + (kind || "");
+  }
+
+  function fillNetForm(s) {
+    document.getElementById("net-ip").value = s.ip || "";
+    document.getElementById("net-subnet").value = s.subnet || "";
+    document.getElementById("net-gateway").value = s.gateway || "";
+    document.getElementById("net-port").value = s.port || "";
+    document.getElementById("net-timeout").value = s.timeout_ms || "";
+  }
+
+  function readNetForm() {
+    return {
+      ip: document.getElementById("net-ip").value.trim(),
+      subnet: document.getElementById("net-subnet").value.trim(),
+      gateway: document.getElementById("net-gateway").value.trim(),
+      port: parseInt(document.getElementById("net-port").value, 10),
+      timeout_ms: parseInt(document.getElementById("net-timeout").value, 10)
+    };
+  }
+
+  function openNetModal() {
+    setNetModalStatus("Idle", "");
+    fetch("/api/network/settings").then(function (r) { return r.json(); })
+      .then(fillNetForm).catch(function () {});
+    netModal.classList.add("open");
+  }
+  function closeNetModal() { netModal.classList.remove("open"); }
+
+  document.getElementById("net-settings-btn")
+    .addEventListener("click", openNetModal);
+  document.getElementById("net-close-btn")
+    .addEventListener("click", closeNetModal);
+  netModal.addEventListener("click", function (e) {
+    if (e.target === netModal) closeNetModal();   // click backdrop to dismiss
+  });
+
+  document.getElementById("net-save-btn").addEventListener("click", function () {
+    setNetModalStatus("Saving…", "");
+    post("/api/network/settings", readNetForm())
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        if (res.settings) fillNetForm(res.settings);
+        setNetModalStatus(res.message || "Saved.", res.ok ? "ok" : "bad");
+        refreshConnStatus();   // saved IP/port become the Connect-form defaults
+      })
+      .catch(function () { setNetModalStatus("Could not save settings.", "bad"); });
+  });
+
+  document.getElementById("net-test-btn").addEventListener("click", function () {
+    setNetModalStatus("Testing…", "");
+    var f = readNetForm();
+    post("/api/network/test", { ip: f.ip || null, port: f.port || null })
+      .then(function (r) { return r.json(); })
+      .then(function (s) {
+        setNetModalStatus(
+          s.status_label || (s.connected ? "Connected" : "No response"),
+          s.connected ? "ok" : "bad"
+        );
+      })
+      .catch(function () { setNetModalStatus("Test failed.", "bad"); });
   });
 
   // ---- Real-time updates: WebSocket primary, HTTP polling fallback ----

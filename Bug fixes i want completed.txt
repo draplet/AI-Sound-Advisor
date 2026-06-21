@@ -1,0 +1,13 @@
+when using the Test connection button in the settings page on run_dashboard
+ the connection shoudl only show the successful message if connected if not display an error the sucessfull message would be pulled from the data from the /info command. if no return from the /info display error
+
+disconnect any demos from the run_dashboard
+test the code to make sure its passing. 
+connection lights are indicating falso connections, when no connection to the x32 green indicator should be red, when connection present determined make indicator green, The inidcator for Audio input should only be green when 
+it activly detects 
+
+*demo messages rolling 
+*cant see the channel # /ch/01
+*Olama AI not available on Run_Dashboard.bat
+*mix is sounding good
+*Export dependency list”

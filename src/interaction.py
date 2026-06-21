@@ -128,6 +128,26 @@ class UserInteractionAgent:
         )
 
     # ------------------------------------------------------------------
+    # Conversational chat (delegates to Agent 4's LLM)
+    # ------------------------------------------------------------------
+
+    def chat(
+        self,
+        message: str,
+        history: Optional[List[Dict[str, str]]] = None,
+        mix_summary: str = "",
+    ):
+        """Answer an operator question conversationally via Agent 4.
+
+        Returns ``(reply_text, source)``. This is the prompt interface's
+        conversational mode; it does not mutate the profile (use
+        :meth:`handle_prompt` for instructions/overrides that should be learned).
+        """
+        return self._suggestions.chat(
+            message, history=history, mix_summary=mix_summary
+        )
+
+    # ------------------------------------------------------------------
     # Free-text prompt interface
     # ------------------------------------------------------------------
 

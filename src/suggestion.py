@@ -26,8 +26,7 @@ guidance, satisfying the never-crash failsafe.
 """
 from __future__ import annotations
 
-import json
-import urllib.request
+import re
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Callable, Dict, List, Optional, Tuple
@@ -45,6 +44,12 @@ from src.detection import (
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+
+#: Matches an unfilled template placeholder in LLM output, e.g.
+#: "[Insert Channel Label Here]". Small local models sometimes emit these form
+#: letters instead of a concrete answer; we reject them and fall back to the
+#: deterministic basic-alert template (which always names the real target).
+PLACEHOLDER_RE = re.compile(r"\[[^\]]{0,80}\]")
 
 #: Priority -> status icon (spec: Red = urgent, Yellow = warning, Blue = info).
 PRIORITY_ICONS: Dict[Priority, str] = {
@@ -90,6 +95,8 @@ class Suggestion(BaseModel):
 
     issue: IssueType
     channel: Optional[str]
+    #: 1-based X32 channel number when the issue is channel-specific (else None).
+    channel_index: Optional[int] = None
     priority: Priority
     confidence: float
     message: str
@@ -103,91 +110,45 @@ class Suggestion(BaseModel):
     def priority_icon(self) -> str:
         return PRIORITY_ICONS.get(self.priority, "🔵")
 
+    @property
+    def channel_ref(self) -> str:
+        """Human channel tag leading every suggestion: "Channel #, Label".
+
+        - Channel-specific issue with a number  -> 'Channel 03, Lead Vocal'
+        - Channel-specific issue, number unknown -> the label alone
+        - Mix-wide issue (no channel)            -> 'Main Mix'
+        Always present so each suggestion states what it refers to (spec: "Use
+        channel labels when available").
+        """
+        if self.channel_index is not None:
+            name = self.channel or ""
+            tag = f"Channel {self.channel_index:02d}"
+            return f"{tag}, {name}" if name else tag
+        if self.channel:
+            return self.channel
+        return "Main Mix"
+
     def render(self) -> str:
-        """Render in the spec output format: icon + message, then confidence."""
+        """Render in the spec output format: icon + tag + message, then confidence."""
         label = self.confidence_label.value.capitalize()
-        return f"{self.priority_icon} {self.message}\nConfidence: {label}"
+        return f"{self.priority_icon} {self.channel_ref} — {self.message}\nConfidence: {label}"
 
 
 # ===========================================================================
-# LLM client interface + production implementations
+# LLM client interface
 # ===========================================================================
 
 class LLMClient(ABC):
-    """Interface for a local LLM backend (Mistral 7B via Ollama / LM Studio)."""
+    """Interface for a local LLM backend (Mistral 7B via Ollama / LM Studio).
+
+    Concrete, HTTP-backed implementations (``OllamaLLMClient``,
+    ``LMStudioLLMClient``) live in :mod:`src.llm_client`; build one with
+    ``src.llm_client.build_llm_client()`` and pass it to ``SuggestionGenerator``.
+    """
 
     @abstractmethod
     def generate(self, prompt: str) -> str:
         """Return the model's completion for ``prompt`` (raises on failure)."""
-
-
-class OllamaClient(LLMClient):
-    """Local Mistral 7B via the Ollama HTTP API (/api/generate)."""
-
-    def __init__(
-        self,
-        model: str = "mistral",
-        host: str = "http://localhost:11434",
-        timeout: float = 30.0,
-        system: str = DEFAULT_SYSTEM_PROMPT,
-    ) -> None:
-        self.model = model
-        self.host = host.rstrip("/")
-        self.timeout = timeout
-        self.system = system
-
-    def generate(self, prompt: str) -> str:
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "system": self.system,
-            "stream": False,
-        }
-        request = urllib.request.Request(
-            f"{self.host}/api/generate",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            body = json.loads(response.read().decode("utf-8"))
-        return str(body.get("response", "")).strip()
-
-
-class LMStudioClient(LLMClient):
-    """Local Mistral 7B via the LM Studio OpenAI-compatible API."""
-
-    def __init__(
-        self,
-        model: str = "mistral-7b-instruct",
-        base_url: str = "http://localhost:1234/v1",
-        timeout: float = 30.0,
-        system: str = DEFAULT_SYSTEM_PROMPT,
-    ) -> None:
-        self.model = model
-        self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
-        self.system = system
-
-    def generate(self, prompt: str) -> str:
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": self.system},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.4,
-            "stream": False,
-        }
-        request = urllib.request.Request(
-            f"{self.base_url}/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            body = json.loads(response.read().decode("utf-8"))
-        return str(body["choices"][0]["message"]["content"]).strip()
 
 
 # ===========================================================================
@@ -217,6 +178,7 @@ class SuggestionGenerator:
         return Suggestion(
             issue=issue.issue,
             channel=issue.channel,
+            channel_index=issue.channel_index,
             priority=issue.priority,
             confidence=issue.confidence,
             message=message,
@@ -226,6 +188,44 @@ class SuggestionGenerator:
     def generate_all(self, issues: List[Issue]) -> List[Suggestion]:
         """Generate suggestions for a list of issues, preserving order."""
         return [self.generate(issue) for issue in issues]
+
+    def llm_available(self) -> bool:
+        """Whether a local LLM is configured *and* reachable (for the status dot).
+
+        ``False`` when no client is configured (the app runs on basic alerts) or
+        when the configured backend's health probe reports it unreachable. A
+        client without an ``is_available`` probe is assumed available once set.
+        Never raises — a failing probe simply reads as unavailable.
+        """
+        client = self._client
+        if client is None:
+            return False
+        probe = getattr(client, "is_available", None)
+        if callable(probe):
+            try:
+                return bool(probe())
+            except Exception:  # noqa: BLE001 — failsafe: treat as unavailable
+                return False
+        return True
+
+    def chat(
+        self,
+        message: str,
+        history: Optional[List[Dict[str, str]]] = None,
+        mix_summary: str = "",
+    ) -> Tuple[str, SuggestionSource]:
+        """Answer a free-text operator question conversationally (the AI chat).
+
+        Grounds the reply in the current mix (``mix_summary``) and the prior
+        turns (``history``: a list of ``{"role", "content"}`` dicts). Uses the
+        local LLM when available; otherwise returns a helpful fallback. Returns
+        ``(reply_text, source)`` and never raises (failsafe).
+        """
+        return self._invoke(
+            self._build_chat_prompt(message, history or [], mix_summary),
+            lambda: self._chat_fallback(),
+            reject_placeholders=False,
+        )
 
     def explain(self, issue: Issue) -> str:
         """The "More" action: a fuller explanation of the issue."""
@@ -248,15 +248,27 @@ class SuggestionGenerator:
     # ------------------------------------------------------------------
 
     def _invoke(
-        self, prompt: str, fallback: Callable[[], str]
+        self,
+        prompt: str,
+        fallback: Callable[[], str],
+        *,
+        reject_placeholders: bool = True,
     ) -> Tuple[str, SuggestionSource]:
-        """Call the LLM; on absence/failure/empty output use ``fallback``."""
+        """Call the LLM; on absence/failure/empty/placeholder output use ``fallback``.
+
+        ``reject_placeholders`` guards the issue suggestions/explanations: if the
+        model returns an unfilled template like "[Insert Channel Label Here]",
+        we discard it and use the deterministic template instead. It is disabled
+        for free-text chat (where brackets can be legitimate).
+        """
         if self._client is None:
             return fallback(), SuggestionSource.FALLBACK
         try:
             text = self._client.generate(prompt).strip()
             if not text:
                 raise ValueError("empty LLM response")
+            if reject_placeholders and PLACEHOLDER_RE.search(text):
+                raise ValueError("LLM returned an unfilled placeholder")
             return text, SuggestionSource.LLM
         except Exception:  # noqa: BLE001 — failsafe: fall back to basic alerts
             return fallback(), SuggestionSource.FALLBACK
@@ -284,12 +296,47 @@ class SuggestionGenerator:
                 "Give concise numbered, step-by-step instructions to fix this "
                 "on a Behringer X32. Keep it to 3-5 short steps."
             )
-        else:  # suggest
+        elif issue.channel:  # suggest, channel-specific
             ask = (
                 "Give one short, actionable suggestion (one or two sentences) "
-                "to address this. Refer to the channel by its label."
+                f'to address this. Refer to the channel as "{issue.channel}". '
+                "Do not use placeholders or square brackets."
+            )
+        else:  # suggest, whole mix
+            ask = (
+                "Give one short, actionable suggestion (one or two sentences) "
+                "to address this on the overall mix. Do not reference a specific "
+                "channel, and do not use placeholders or square brackets."
             )
         return header + ask
+
+    def _build_chat_prompt(
+        self, message: str, history: List[Dict[str, str]], mix_summary: str
+    ) -> str:
+        """Compose a conversational prompt from mix context + history + message."""
+        lines: List[str] = []
+        if mix_summary:
+            lines.append(f"Current mix status: {mix_summary}.")
+            lines.append("")
+        for turn in history:
+            role = (turn.get("role") or "").lower() if isinstance(turn, dict) else ""
+            content = turn.get("content", "") if isinstance(turn, dict) else ""
+            if not content:
+                continue
+            who = "Operator" if role == "user" else "Coach"
+            lines.append(f"{who}: {content}")
+        lines.append(f"Operator: {message}")
+        lines.append("Coach:")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _chat_fallback() -> str:
+        """Reply used when no local model is reachable."""
+        return (
+            "I can't reach the local AI model right now, so I can't chat freely. "
+            "The live suggestions are still running — connect Ollama or LM Studio "
+            "to enable conversational help."
+        )
 
     # ------------------------------------------------------------------
     # Fallback (basic alert) templates
@@ -297,7 +344,7 @@ class SuggestionGenerator:
 
     @staticmethod
     def _target(issue: Issue) -> str:
-        return issue.channel if issue.channel else "the channel"
+        return issue.channel if issue.channel else "the main mix"
 
     def _fallback_message(self, issue: Issue) -> str:
         target = self._target(issue)
